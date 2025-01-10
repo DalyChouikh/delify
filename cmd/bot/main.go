@@ -27,6 +27,7 @@ func main() {
 			gateway.IntentGuildMessages,
 			gateway.IntentDirectMessages,
 			gateway.IntentGuildVoiceStates,
+			gateway.IntentMessageContent,
 		)),
 		bot.WithEventListenerFunc(onMessageCreate),
 	)
