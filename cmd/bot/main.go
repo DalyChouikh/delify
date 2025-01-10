@@ -2,54 +2,37 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/disgoorg/disgo"
-	"github.com/disgoorg/disgo/bot"
-	"github.com/disgoorg/disgo/discord"
-	"github.com/disgoorg/disgo/events"
-	"github.com/disgoorg/disgo/gateway"
+	"github.com/DalyChouikh/delify/configs"
+	"github.com/DalyChouikh/delify/internal/bot/service"
 	"github.com/joho/godotenv"
 )
 
 func main() {
-	err := godotenv.Load(".env.local")
-	if err != nil {
+	if err := godotenv.Load(".env.local"); err != nil {
 		log.Fatal("Error loading .env file")
 	}
-	client, err := disgo.New(os.Getenv("DISCORD_TOKEN"),
-		bot.WithGatewayConfigOpts(gateway.WithIntents(
-			gateway.IntentGuilds,
-			gateway.IntentGuildMessages,
-			gateway.IntentDirectMessages,
-			gateway.IntentGuildVoiceStates,
-			gateway.IntentMessageContent,
-		)),
-		bot.WithEventListenerFunc(onMessageCreate),
-	)
+
+	config := configs.NewConfig(os.Getenv("DISCORD_TOKEN"))
+
+	botService, err := service.NewBotService(config.DiscordToken)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	// connect to the gateway
-	if err = client.OpenGateway(context.TODO()); err != nil {
-		panic(err)
+
+	if err := botService.Start(context.Background()); err != nil {
+		log.Fatal(err)
 	}
+
 	log.Println("Bot is running")
 
 	s := make(chan os.Signal, 1)
 	signal.Notify(s, syscall.SIGINT, syscall.SIGTERM)
 	<-s
-}
 
-func onMessageCreate(e *events.MessageCreate) {
-	if e.Message.Author.Bot {
-		return
-	}
-	var message string = fmt.Sprintf("Received message: %s", e.Message.Content)
-	log.Println("Content: " + e.Message.Content)
-	_, _ = e.Client().Rest().CreateMessage(e.ChannelID, discord.NewMessageCreateBuilder().SetContent(message).Build())
+	botService.Close()
 }
