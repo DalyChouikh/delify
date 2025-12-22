@@ -75,7 +75,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	b.playerManager = player.NewManager(b.lavalinkClient.Link, b.session, b.logger)
 
 	// Create command handler
-	b.commandHandler = commands.NewHandler(b.session, b.playerManager, b.logger)
+	b.commandHandler = commands.NewHandler(b.session, b.playerManager, b.config, b.logger)
 
 	// Register slash commands
 	if err := b.commandHandler.Register(b.config.Discord.GuildID); err != nil {

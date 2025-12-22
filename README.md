@@ -4,13 +4,28 @@ A production-grade Discord music bot written in Go, powered by Lavalink v4 with 
 
 ## 🎵 Features
 
+- **Rich Embeds**: Beautiful now-playing cards with artwork, progress info, and queue status
+- **Interactive Buttons**: Control playback without typing commands
+  - ▶️ Pause / Resume
+  - ⏭️ Skip current track
+  - ⏹️ Stop playback
+  - 🗑️ Clear queue
+  - ⏪/⏩ Seek (±5s, ±10s, ±30s)
+
 - **Slash Commands**: Modern Discord slash command interface
   - `/play [query/link]` - Play a song or add to queue (supports YouTube, Spotify, and more)
   - `/skip` - Skip the current track
   - `/stop` - Stop playback and clear the queue
+  - `/pause` - Pause the current track
+  - `/resume` - Resume playback
+  - `/nowplaying` - Show the currently playing track with controls
+  - `/queue [page]` - View the queue (paginated, 10 tracks per page)
+  - `/clear` - Clear the queue (keeps current song playing)
+  - `/seek [time]` - Seek to a position (e.g., `1:30`, `90`, `1:30:00`)
 
 - **Spotify Integration**: Play Spotify tracks by mirroring them via YouTube
 - **Queue System**: Automatic queue management with track progression
+- **User-Friendly Errors**: Ephemeral error messages that don't clutter the channel
 - **Production Ready**: Clean architecture, proper error handling, graceful shutdown
 
 ## 🏗️ Architecture
@@ -25,15 +40,25 @@ delify/
 │   │   └── bot.go            # Bot initialization and lifecycle
 │   ├── commands/
 │   │   └── handler.go        # Slash command handlers
+│   ├── components/
+│   │   └── buttons.go        # Discord button components
 │   ├── config/
 │   │   ├── config.go         # Configuration from env vars
 │   │   └── errors.go         # Configuration errors
+│   ├── embed/
+│   │   ├── builder.go        # Fluent embed builder
+│   │   ├── colors.go         # Discord embed colors
+│   │   └── templates.go      # Pre-built embed templates
+│   ├── errors/
+│   │   └── messages.go       # User-friendly error messages
 │   ├── lavalink/
 │   │   └── client.go         # Lavalink connection with retry
-│   └── player/
-│       ├── manager.go        # Music player management
-│       ├── queue.go          # Track queue implementation
-│       └── types.go          # Shared types
+│   ├── player/
+│   │   ├── manager.go        # Music player management
+│   │   ├── queue.go          # Track queue implementation
+│   │   └── types.go          # Shared types
+│   └── utils/
+│       └── format.go         # Time formatting utilities
 ├── docker-compose.yml        # Docker Compose configuration
 ├── Dockerfile                # Multi-stage Docker build
 ├── go.mod                    # Go module definition
@@ -82,6 +107,7 @@ All configuration is done via environment variables:
 |----------|-------------|---------|
 | `DISCORD_TOKEN` | Discord bot token | *required* |
 | `DISCORD_GUILD_ID` | Guild ID for command registration | *global* |
+| `DEVELOPER_USER_ID` | Your Discord user ID (for footer avatar) | *optional* |
 | `LAVALINK_PASSWORD` | Lavalink server password | `youshallnotpass` |
 | `SPOTIFY_CLIENT_ID` | Spotify API client ID | *required for Spotify* |
 | `SPOTIFY_CLIENT_SECRET` | Spotify API client secret | *required for Spotify* |

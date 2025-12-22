@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Discord  DiscordConfig
 	Lavalink LavalinkConfig
+	Bot      BotConfig
 	LogLevel string
 }
 
@@ -27,6 +28,11 @@ type LavalinkConfig struct {
 	Secure   bool
 }
 
+// BotConfig holds bot-specific configuration.
+type BotConfig struct {
+	DeveloperUserID string
+}
+
 // Load reads configuration from environment variables.
 func Load() *Config {
 	return &Config{
@@ -39,6 +45,9 @@ func Load() *Config {
 			Port:     getEnvAsInt("LAVALINK_PORT", 2333),
 			Password: getEnv("LAVALINK_PASSWORD", "youshallnotpass"),
 			Secure:   getEnvAsBool("LAVALINK_SECURE", false),
+		},
+		Bot: BotConfig{
+			DeveloperUserID: getEnv("DEVELOPER_USER_ID", ""),
 		},
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 	}

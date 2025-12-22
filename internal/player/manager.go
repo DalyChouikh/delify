@@ -15,30 +15,34 @@ import (
 
 // Manager handles music players across all guilds.
 type Manager struct {
-	link    disgolink.Client
-	session *discordgo.Session
-	queues  map[snowflake.ID]*Queue
-	mu      sync.RWMutex
-	logger  *slog.Logger
+	link          disgolink.Client
+	session       *discordgo.Session
+	queues        map[snowflake.ID]*Queue
+	currentTracks map[snowflake.ID]*QueuedTrack // Track who requested the current song
+	mu            sync.RWMutex
+	logger        *slog.Logger
 }
 
 // NewManager creates a new player manager.
 func NewManager(link disgolink.Client, session *discordgo.Session, logger *slog.Logger) *Manager {
 	m := &Manager{
-		link:    link,
-		session: session,
-		queues:  make(map[snowflake.ID]*Queue),
-		logger:  logger,
+		link:          link,
+		session:       session,
+		queues:        make(map[snowflake.ID]*Queue),
+		currentTracks: make(map[snowflake.ID]*QueuedTrack),
+		logger:        logger,
 	}
 
 	// Register event handlers for queue management
 	link.AddListeners(disgolink.NewListenerFunc(m.onTrackEnd))
+	link.AddListeners(disgolink.NewListenerFunc(m.onTrackStart))
+	link.AddListeners(disgolink.NewListenerFunc(m.onTrackException))
 
 	return m
 }
 
 // Play loads and plays a track or adds it to the queue.
-func (m *Manager) Play(ctx context.Context, guildID, channelID snowflake.ID, query string) (*PlayResult, error) {
+func (m *Manager) Play(ctx context.Context, guildID, channelID snowflake.ID, query, requestedByID, requestedBy string) (*PlayResult, error) {
 	// Get or create player
 	player := m.link.Player(guildID)
 	queue := m.GetQueue(guildID)
@@ -66,16 +70,17 @@ func (m *Manager) Play(ctx context.Context, guildID, channelID snowflake.ID, que
 	switch data := loadResult.Data.(type) {
 	case lavalink.Track:
 		// Single track
-		queue.Add(data)
+		pos := queue.Add(data, requestedByID, requestedBy)
 		result = &PlayResult{
-			Type:  ResultTypeTrack,
-			Track: &data,
+			Type:          ResultTypeTrack,
+			Track:         &data,
+			QueuePosition: pos,
 		}
 
 	case lavalink.Playlist:
 		// Playlist
 		for _, track := range data.Tracks {
-			queue.Add(track)
+			queue.Add(track, requestedByID, requestedBy)
 		}
 		result = &PlayResult{
 			Type:         ResultTypePlaylist,
@@ -88,10 +93,11 @@ func (m *Manager) Play(ctx context.Context, guildID, channelID snowflake.ID, que
 		if len(data) == 0 {
 			return nil, fmt.Errorf("no tracks found for query: %s", query)
 		}
-		queue.Add(data[0])
+		pos := queue.Add(data[0], requestedByID, requestedBy)
 		result = &PlayResult{
-			Type:  ResultTypeTrack,
-			Track: &data[0],
+			Type:          ResultTypeTrack,
+			Track:         &data[0],
+			QueuePosition: pos,
 		}
 
 	case lavalink.Empty:
@@ -117,14 +123,20 @@ func (m *Manager) Play(ctx context.Context, guildID, channelID snowflake.ID, que
 	return result, nil
 }
 
-// Skip skips the current track.
-func (m *Manager) Skip(ctx context.Context, guildID snowflake.ID) error {
+// Skip skips the current track and returns info about it.
+func (m *Manager) Skip(ctx context.Context, guildID snowflake.ID) (*lavalink.Track, error) {
 	player := m.link.Player(guildID)
-	if player.Track() == nil {
-		return fmt.Errorf("nothing is currently playing")
+	currentTrack := player.Track()
+	if currentTrack == nil {
+		return nil, fmt.Errorf("nothing is currently playing")
 	}
 
-	return m.playNext(ctx, guildID)
+	// Play next track
+	if err := m.playNext(ctx, guildID); err != nil {
+		return nil, err
+	}
+
+	return currentTrack, nil
 }
 
 // Stop stops playback and clears the queue.
@@ -134,6 +146,11 @@ func (m *Manager) Stop(ctx context.Context, guildID snowflake.ID) error {
 
 	// Clear the queue
 	queue.Clear()
+
+	// Clear current track info
+	m.mu.Lock()
+	delete(m.currentTracks, guildID)
+	m.mu.Unlock()
 
 	// Stop the player
 	if err := player.Update(ctx, lavalink.WithNullTrack()); err != nil {
@@ -146,6 +163,134 @@ func (m *Manager) Stop(ctx context.Context, guildID snowflake.ID) error {
 	}
 
 	return nil
+}
+
+// Pause pauses the current playback.
+func (m *Manager) Pause(ctx context.Context, guildID snowflake.ID) error {
+	player := m.link.Player(guildID)
+	if player.Track() == nil {
+		return fmt.Errorf("nothing is currently playing")
+	}
+	if player.Paused() {
+		return fmt.Errorf("playback is already paused")
+	}
+
+	return player.Update(ctx, lavalink.WithPaused(true))
+}
+
+// Resume resumes paused playback.
+func (m *Manager) Resume(ctx context.Context, guildID snowflake.ID) error {
+	player := m.link.Player(guildID)
+	if player.Track() == nil {
+		return fmt.Errorf("nothing is currently playing")
+	}
+	if !player.Paused() {
+		return fmt.Errorf("playback is not paused")
+	}
+
+	return player.Update(ctx, lavalink.WithPaused(false))
+}
+
+// Seek seeks to a position in the current track.
+func (m *Manager) Seek(ctx context.Context, guildID snowflake.ID, positionMs int64) error {
+	player := m.link.Player(guildID)
+	track := player.Track()
+	if track == nil {
+		return fmt.Errorf("nothing is currently playing")
+	}
+
+	// Validate position
+	if positionMs < 0 {
+		positionMs = 0
+	}
+	maxPos := int64(track.Info.Length)
+	if positionMs > maxPos {
+		positionMs = maxPos - 1000 // Stay 1 second before end
+	}
+
+	return player.Update(ctx, lavalink.WithPosition(lavalink.Duration(positionMs)))
+}
+
+// SeekRelative seeks relative to the current position.
+func (m *Manager) SeekRelative(ctx context.Context, guildID snowflake.ID, deltaMs int64) (lavalink.Duration, error) {
+	player := m.link.Player(guildID)
+	track := player.Track()
+	if track == nil {
+		return 0, fmt.Errorf("nothing is currently playing")
+	}
+
+	currentPos := int64(player.Position())
+	newPos := currentPos + deltaMs
+
+	if err := m.Seek(ctx, guildID, newPos); err != nil {
+		return 0, err
+	}
+
+	// Clamp for return value
+	if newPos < 0 {
+		newPos = 0
+	}
+	if newPos > int64(track.Info.Length) {
+		newPos = int64(track.Info.Length)
+	}
+
+	return lavalink.Duration(newPos), nil
+}
+
+// ClearQueue clears the queue but keeps the current track playing.
+func (m *Manager) ClearQueue(guildID snowflake.ID) int {
+	queue := m.GetQueue(guildID)
+	return queue.Clear()
+}
+
+// GetPlayerState returns the current state of the player.
+func (m *Manager) GetPlayerState(guildID snowflake.ID) *PlayerState {
+	player := m.link.Player(guildID)
+	queue := m.GetQueue(guildID)
+
+	state := &PlayerState{
+		QueueLength: queue.Len(),
+	}
+
+	track := player.Track()
+	if track != nil {
+		state.IsPlaying = true
+		state.IsPaused = player.Paused()
+
+		// Get current track requester info
+		m.mu.RLock()
+		currentQueued := m.currentTracks[guildID]
+		m.mu.RUnlock()
+
+		var reqID, reqName string
+		if currentQueued != nil {
+			reqID = currentQueued.RequestedByID
+			reqName = currentQueued.RequestedBy
+		}
+
+		state.CurrentTrack = &CurrentTrackInfo{
+			Track:         track,
+			Position:      player.Position(),
+			IsPaused:      player.Paused(),
+			RequestedByID: reqID,
+			RequestedBy:   reqName,
+		}
+
+		// Get next track info
+		if nextTrack, ok := queue.Peek(); ok {
+			info := nextTrack.ToDisplayInfo(1)
+			state.NextTrack = &info
+		}
+	}
+
+	return state
+}
+
+// GetCurrentTrack returns the currently playing track with requester info.
+func (m *Manager) GetCurrentTrack(guildID snowflake.ID) *QueuedTrack {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.currentTracks[guildID]
 }
 
 // GetQueue returns the queue for a guild, creating one if it doesn't exist.
@@ -167,20 +312,37 @@ func (m *Manager) playNext(ctx context.Context, guildID snowflake.ID) error {
 	queue := m.GetQueue(guildID)
 	player := m.link.Player(guildID)
 
-	track, ok := queue.Next()
+	queuedTrack, ok := queue.Next()
 	if !ok {
 		// Queue is empty, stop the player
+		m.mu.Lock()
+		delete(m.currentTracks, guildID)
+		m.mu.Unlock()
+
 		if err := player.Update(ctx, lavalink.WithNullTrack()); err != nil {
 			return fmt.Errorf("failed to stop player: %w", err)
 		}
 		return nil
 	}
 
-	if err := player.Update(ctx, lavalink.WithTrack(track)); err != nil {
+	// Store current track info
+	m.mu.Lock()
+	m.currentTracks[guildID] = &queuedTrack
+	m.mu.Unlock()
+
+	if err := player.Update(ctx, lavalink.WithTrack(queuedTrack.Track)); err != nil {
 		return fmt.Errorf("failed to play track: %w", err)
 	}
 
 	return nil
+}
+
+// onTrackStart handles track start events for logging.
+func (m *Manager) onTrackStart(player disgolink.Player, event lavalink.TrackStartEvent) {
+	m.logger.Info("track started",
+		"guild", player.GuildID(),
+		"track", event.Track.Info.Title,
+	)
 }
 
 // onTrackEnd handles track end events to play the next track.
@@ -193,6 +355,15 @@ func (m *Manager) onTrackEnd(player disgolink.Player, event lavalink.TrackEndEve
 	if err := m.playNext(ctx, player.GuildID()); err != nil {
 		m.logger.Error("failed to play next track", "error", err, "guild", player.GuildID())
 	}
+}
+
+// onTrackException handles track exception events.
+func (m *Manager) onTrackException(player disgolink.Player, event lavalink.TrackExceptionEvent) {
+	m.logger.Error("track exception",
+		"guild", player.GuildID(),
+		"track", event.Track.Info.Title,
+		"error", event.Exception.Message,
+	)
 }
 
 // buildSearchQuery adds appropriate search prefix based on query type.
