@@ -68,6 +68,10 @@ delify/
 ├── docker-compose.yml        # Docker Compose configuration
 ├── Dockerfile                # Multi-stage Docker build
 ├── go.mod                    # Go module definition
+├── go.sum                    # Go module checksums
+├── .github/
+│   └── workflows/
+│       └── deploy-azure.yml  # Azure CI/CD pipeline
 └── .env.example              # Example environment variables
 ```
 
@@ -152,8 +156,10 @@ The `docker-compose.yml` configures Lavalink entirely via environment variables,
 
 ```yaml
 # Plugin installation at runtime
-LAVALINK_PLUGINS_0_DEPENDENCY: "com.github.topi314.lavasrc:lavasrc-plugin:4.3.0"
+LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.16.0"
 LAVALINK_PLUGINS_0_SNAPSHOT: false
+LAVALINK_PLUGINS_1_DEPENDENCY: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
+LAVALINK_PLUGINS_1_SNAPSHOT: false
 
 # LavaSrc configuration
 PLUGINS_LAVASRC_PROVIDERS_0: "ytsearch:\"%ISRC%\""
@@ -161,18 +167,95 @@ PLUGINS_LAVASRC_PROVIDERS_1: "ytsearch:%QUERY%"
 PLUGINS_LAVASRC_SOURCES_SPOTIFY: true
 ```
 
-## 🌐 Azure Deployment
+## ☁️ Azure Deployment
 
-### Azure Container Apps
+Delify supports deployment to Azure Container Apps with GitHub Actions CI/CD. On every push to `main`, the pipeline automatically builds and deploys both Lavalink and the bot.
 
-1. Create an Azure Container Registry
-2. Build and push the image:
+### Prerequisites
+
+- Azure account with active subscription
+- Azure CLI installed (`az login`)
+- GitHub repository (private or public)
+
+### Quick Setup
+
+1. **Create Azure resources**:
    ```bash
-   az acr build --registry <your-registry> --image delify:latest .
-   ```
-3. Deploy as a Container Apps environment with both services
+   # Set variables (customize names as needed)
+   RESOURCE_GROUP="delify-rg"
+   LOCATION="westeurope"
+   ACR_NAME="delifyacr$(date +%s | tail -c 5)"  # Must be globally unique
+   KEYVAULT_NAME="delify-kv-$(date +%s | tail -c 5)"
+   CONTAINER_APP_ENV="delify-env"
 
-### Azure VM
+   # Create resources
+   az group create --name $RESOURCE_GROUP --location $LOCATION
+   az acr create --resource-group $RESOURCE_GROUP --name $ACR_NAME --sku Basic --admin-enabled true
+   az keyvault create --resource-group $RESOURCE_GROUP --name $KEYVAULT_NAME --location $LOCATION
+   az containerapp env create --resource-group $RESOURCE_GROUP --name $CONTAINER_APP_ENV --location $LOCATION
+   ```
+
+2. **Grant yourself Key Vault access** (if using RBAC):
+   ```bash
+   USER_OID=$(az ad signed-in-user show --query id -o tsv)
+   KV_ID=$(az keyvault show --name $KEYVAULT_NAME --query id -o tsv)
+   az role assignment create --role "Key Vault Secrets Officer" --assignee $USER_OID --scope $KV_ID
+   ```
+
+3. **Add secrets to Key Vault**:
+   ```bash
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "DISCORD-TOKEN" --value "your_token"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "DISCORD-GUILD-IDS" --value "123,456"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "DEVELOPER-USER-ID" --value "your_id"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "LAVALINK-PASSWORD" --value "youshallnotpass"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "SPOTIFY-CLIENT-ID" --value "your_id"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "SPOTIFY-CLIENT-SECRET" --value "your_secret"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "RAPIDAPI-KEY" --value "your_key"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "RAPIDAPI-HOST" --value "genius-song-lyrics1.p.rapidapi.com"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "INACTIVITY-TIMEOUT" --value "30"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "YOUTUBE-OAUTH-REFRESH-TOKEN" --value "your_token_or_none"
+   ```
+
+4. **Create service principal for GitHub Actions**:
+   ```bash
+   az ad sp create-for-rbac --name "delify-github-actions" --role contributor \
+     --scopes /subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RESOURCE_GROUP \
+     --json-auth
+   ```
+   Save the JSON output for the next step.
+
+5. **Grant service principal access to ACR and Key Vault**:
+   ```bash
+   SP_CLIENT_ID="<clientId from JSON above>"
+   ACR_ID=$(az acr show --name $ACR_NAME --query id -o tsv)
+   KV_ID=$(az keyvault show --name $KEYVAULT_NAME --query id -o tsv)
+   
+   az role assignment create --assignee $SP_CLIENT_ID --role AcrPush --scope $ACR_ID
+   az role assignment create --assignee $SP_CLIENT_ID --role "Key Vault Secrets User" --scope $KV_ID
+   ```
+
+6. **Add GitHub Secrets** (Settings → Secrets → Actions):
+   | Secret Name | Value |
+   |-------------|-------|
+   | `AZURE_CREDENTIALS` | Entire JSON from step 4 |
+   | `ACR_NAME` | Your ACR name (e.g., `delifyacr7444`) |
+   | `RESOURCE_GROUP` | `delify-rg` |
+   | `KEYVAULT_NAME` | Your Key Vault name |
+   | `CONTAINER_APP_ENV` | `delify-env` |
+
+7. **Push to main** - GitHub Actions will automatically deploy!
+
+### View Logs
+
+```bash
+# Bot logs
+az containerapp logs show --name delify-bot --resource-group delify-rg --follow
+
+# Lavalink logs  
+az containerapp logs show --name delify-lavalink --resource-group delify-rg --follow
+```
+
+### Manual Deployment (Azure VM)
 
 1. Install Docker on the VM
 2. Clone the repository
@@ -201,61 +284,6 @@ PLUGINS_LAVASRC_SOURCES_SPOTIFY: true
 
 ```bash
 go build -o delify ./cmd/bot
-```
-
-## ☁️ Azure Deployment
-
-Delify supports deployment to Azure Container Apps with GitHub Actions CI/CD.
-
-### Quick Setup
-
-1. **Install Azure CLI** and login:
-   ```bash
-   az login
-   ```
-
-2. **Create Azure resources**:
-   ```bash
-   # Set variables
-   RESOURCE_GROUP="delify-rg"
-   LOCATION="eastus"
-   ACR_NAME="delifyacr"
-   KEYVAULT_NAME="delify-kv"
-   CONTAINER_APP_ENV="delify-env"
-
-   # Create resources
-   az group create --name $RESOURCE_GROUP --location $LOCATION
-   az acr create --resource-group $RESOURCE_GROUP --name $ACR_NAME --sku Basic --admin-enabled true
-   az keyvault create --resource-group $RESOURCE_GROUP --name $KEYVAULT_NAME --location $LOCATION
-   az containerapp env create --resource-group $RESOURCE_GROUP --name $CONTAINER_APP_ENV --location $LOCATION
-   ```
-
-3. **Add secrets to Key Vault**:
-   ```bash
-   az keyvault secret set --vault-name $KEYVAULT_NAME --name "DISCORD-TOKEN" --value "your_token"
-   az keyvault secret set --vault-name $KEYVAULT_NAME --name "DISCORD-GUILD-IDS" --value "123,456"
-   az keyvault secret set --vault-name $KEYVAULT_NAME --name "SPOTIFY-CLIENT-ID" --value "your_id"
-   az keyvault secret set --vault-name $KEYVAULT_NAME --name "SPOTIFY-CLIENT-SECRET" --value "your_secret"
-   # ... add all other secrets
-   ```
-
-4. **Create service principal for GitHub**:
-   ```bash
-   az ad sp create-for-rbac --name "delify-github-actions" --role contributor \
-     --scopes /subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RESOURCE_GROUP \
-     --json-auth
-   ```
-
-5. **Add GitHub Secrets** (Settings → Secrets → Actions):
-   - `AZURE_CREDENTIALS` - JSON from step 4
-   - `ACR_NAME`, `RESOURCE_GROUP`, `KEYVAULT_NAME`, `CONTAINER_APP_ENV`
-
-6. **Push to main** - GitHub Actions will automatically deploy!
-
-### View Logs
-
-```bash
-az containerapp logs show --name delify-bot --resource-group delify-rg --follow
 ```
 
 ## 📄 License
