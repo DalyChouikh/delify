@@ -78,7 +78,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	b.commandHandler = commands.NewHandler(b.session, b.playerManager, b.config, b.logger)
 
 	// Register slash commands
-	if err := b.commandHandler.Register(b.config.Discord.GuildID); err != nil {
+	if err := b.commandHandler.Register(b.config.Discord.GuildIDs); err != nil {
 		return fmt.Errorf("failed to register commands: %w", err)
 	}
 

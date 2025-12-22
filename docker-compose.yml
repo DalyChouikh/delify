@@ -140,7 +140,7 @@ services:
     environment:
       # Discord Configuration
       DISCORD_TOKEN: ${DISCORD_TOKEN}
-      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:-}
+      DISCORD_GUILD_IDS: ${DISCORD_GUILD_IDS:-}
       DEVELOPER_USER_ID: ${DEVELOPER_USER_ID:-}
 
       # Lavalink Configuration

@@ -197,13 +197,34 @@ func (h *Handler) Commands() []*discordgo.ApplicationCommand {
 }
 
 // Register registers all slash commands with Discord.
-func (h *Handler) Register(guildID string) error {
-	for _, cmd := range h.Commands() {
-		_, err := h.session.ApplicationCommandCreate(h.session.State.User.ID, guildID, cmd)
-		if err != nil {
-			return fmt.Errorf("failed to create command %s: %w", cmd.Name, err)
+// If guildIDs is empty, commands are registered globally (takes up to 1 hour to propagate).
+// If guildIDs is provided, commands are registered to each guild instantly.
+func (h *Handler) Register(guildIDs []string) error {
+	commands := h.Commands()
+
+	// If no guild IDs specified, register globally
+	if len(guildIDs) == 0 {
+		h.logger.Info("registering commands globally (may take up to 1 hour to propagate)")
+		for _, cmd := range commands {
+			_, err := h.session.ApplicationCommandCreate(h.session.State.User.ID, "", cmd)
+			if err != nil {
+				return fmt.Errorf("failed to create global command %s: %w", cmd.Name, err)
+			}
+			h.logger.Info("registered global command", "name", cmd.Name)
 		}
-		h.logger.Info("registered command", "name", cmd.Name)
+		return nil
+	}
+
+	// Register to each specified guild
+	for _, guildID := range guildIDs {
+		h.logger.Info("registering commands to guild", "guild_id", guildID)
+		for _, cmd := range commands {
+			_, err := h.session.ApplicationCommandCreate(h.session.State.User.ID, guildID, cmd)
+			if err != nil {
+				return fmt.Errorf("failed to create command %s for guild %s: %w", cmd.Name, guildID, err)
+			}
+			h.logger.Info("registered command", "name", cmd.Name, "guild_id", guildID)
+		}
 	}
 	return nil
 }

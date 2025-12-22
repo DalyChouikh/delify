@@ -91,7 +91,7 @@ delify/
 2. **Edit `.env` with your credentials:**
    ```env
    DISCORD_TOKEN=your_discord_bot_token
-   DISCORD_GUILD_ID=your_server_id   # Optional, for faster command registration
+   DISCORD_GUILD_IDS=123456789,987654321   # Optional, comma-separated for faster registration
    SPOTIFY_CLIENT_ID=your_spotify_client_id
    SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
    ```
@@ -113,7 +113,7 @@ All configuration is done via environment variables:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DISCORD_TOKEN` | Discord bot token | *required* |
-| `DISCORD_GUILD_ID` | Guild ID for command registration | *global* |
+| `DISCORD_GUILD_IDS` | Comma-separated guild IDs for faster registration | *global* |
 | `DEVELOPER_USER_ID` | Your Discord user ID (for footer avatar) | *optional* |
 | `LAVALINK_PASSWORD` | Lavalink server password | `youshallnotpass` |
 | `SPOTIFY_CLIENT_ID` | Spotify API client ID | *required for Spotify* |

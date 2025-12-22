@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,8 +19,8 @@ type Config struct {
 
 // DiscordConfig holds Discord-specific configuration.
 type DiscordConfig struct {
-	Token   string
-	GuildID string
+	Token    string
+	GuildIDs []string // List of guild IDs for faster command registration (empty = global)
 }
 
 // LavalinkConfig holds Lavalink server configuration.
@@ -49,8 +50,8 @@ func Load() *Config {
 
 	return &Config{
 		Discord: DiscordConfig{
-			Token:   getEnv("DISCORD_TOKEN", ""),
-			GuildID: getEnv("DISCORD_GUILD_ID", ""),
+			Token:    getEnv("DISCORD_TOKEN", ""),
+			GuildIDs: getEnvAsSlice("DISCORD_GUILD_IDS", ","),
 		},
 		Lavalink: LavalinkConfig{
 			Host:     getEnv("LAVALINK_HOST", "localhost"),
@@ -105,4 +106,23 @@ func getEnvAsBool(key string, defaultValue bool) bool {
 		}
 	}
 	return defaultValue
+}
+
+// getEnvAsSlice reads an environment variable as a slice split by separator.
+// Returns empty slice if the variable is not set or empty.
+func getEnvAsSlice(key, separator string) []string {
+	val := os.Getenv(key)
+	if val == "" {
+		return nil
+	}
+
+	parts := strings.Split(val, separator)
+	var result []string
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
