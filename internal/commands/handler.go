@@ -277,6 +277,12 @@ func (h *Handler) handleButton(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
+	// Handle queue pagination separately (doesn't require voice channel)
+	if strings.HasPrefix(customID, "delify:queue:") {
+		h.handleQueuePagination(s, i)
+		return
+	}
+
 	// For playback controls, verify user is in the same voice channel
 	if err := h.verifyVoiceChannel(i); err != nil {
 		h.respondEphemeralError(s, i, err)
@@ -603,6 +609,76 @@ func (h *Handler) handleQueue(s *discordgo.Session, i *discordgo.InteractionCrea
 	queueEmbed := h.templates.QueueDisplay(items, currentTrack, currentPage, totalPages, queue.Len(), totalDuration)
 
 	h.respondWithEmbed(s, i, queueEmbed, components.QueueComponents(currentPage, totalPages))
+}
+
+// handleQueuePagination handles queue prev/next button clicks.
+func (h *Handler) handleQueuePagination(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	customID := i.MessageComponentData().CustomID
+	guildID, _ := snowflake.Parse(i.GuildID)
+	queue := h.player.GetQueue(guildID)
+
+	// Parse current page from the existing embed
+	currentPage := 1
+	if i.Message != nil && len(i.Message.Embeds) > 0 {
+		// Try to extract current page from footer text like "Page 1 of 5"
+		footer := i.Message.Embeds[0].Footer
+		if footer != nil && footer.Text != "" {
+			var page, total int
+			if _, err := fmt.Sscanf(footer.Text, "Page %d of %d", &page, &total); err == nil {
+				currentPage = page
+			}
+		}
+	}
+
+	// Calculate new page based on button clicked
+	switch customID {
+	case components.ButtonQueuePrev:
+		currentPage--
+	case components.ButtonQueueNext:
+		currentPage++
+	}
+
+	if currentPage < 1 {
+		currentPage = 1
+	}
+
+	// Get queue page (GetPage uses 0-indexed pages)
+	tracks, actualPage, totalPages := queue.GetPage(currentPage-1, queuePageSize)
+
+	// Build queue items
+	items := make([]embed.QueueItem, len(tracks))
+	for idx, t := range tracks {
+		items[idx] = embed.QueueItem{
+			Position:    (actualPage-1)*queuePageSize + idx + 1,
+			Title:       t.Track.Info.Title,
+			Author:      t.Track.Info.Author,
+			Duration:    t.Track.Info.Length,
+			RequestedBy: t.RequestedBy,
+		}
+	}
+
+	// Get current track
+	var currentTrack *embed.TrackInfo
+	state := h.player.GetPlayerState(guildID)
+	if state.CurrentTrack != nil {
+		info := h.buildTrackInfo(state)
+		currentTrack = &info
+	}
+
+	totalDuration := queue.TotalDuration()
+	queueEmbed := h.templates.QueueDisplay(items, currentTrack, actualPage, totalPages, queue.Len(), totalDuration)
+
+	// Update the message with new page
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Embeds:     []*discordgo.MessageEmbed{queueEmbed},
+			Components: components.QueueComponents(actualPage, totalPages),
+		},
+	})
+	if err != nil {
+		h.logger.Error("failed to update queue pagination", "error", err)
+	}
 }
 
 // handleClear handles the /clear command.
