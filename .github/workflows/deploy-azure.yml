@@ -1,0 +1,243 @@
+# Deploy Delify to Azure Container Apps
+# Triggers on push to main branch only
+
+name: Deploy to Azure
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+  KEYVAULT_NAME: ${{ secrets.KEYVAULT_NAME }}
+  CONTAINER_APP_ENV: ${{ secrets.CONTAINER_APP_ENV }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # ============================================
+      # Checkout and Setup
+      # ============================================
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ============================================
+      # Build and Push Images to ACR
+      # ============================================
+      - name: Login to ACR
+        run: |
+          az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build and push Bot image
+        run: |
+          docker build -t ${{ env.ACR_NAME }}.azurecr.io/delify-bot:${{ github.sha }} \
+                       -t ${{ env.ACR_NAME }}.azurecr.io/delify-bot:latest \
+                       -f Dockerfile .
+          docker push ${{ env.ACR_NAME }}.azurecr.io/delify-bot:${{ github.sha }}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/delify-bot:latest
+
+      # ============================================
+      # Retrieve Secrets from Key Vault
+      # ============================================
+      - name: Get secrets from Key Vault
+        id: secrets
+        run: |
+          echo "DISCORD_TOKEN=$(az keyvault secret show --vault-name ${{ env.KEYVAULT_NAME }} --name DISCORD-TOKEN --query value -o tsv)" >> $GITHUB_OUTPUT
+          echo "DISCORD_GUILD_IDS=$(az keyvault secret show --vault-name ${{ env.KEYVAULT_NAME }} --name DISCORD-GUILD-IDS --query value -o tsv)" >> $GITHUB_OUTPUT
+          echo "DEVELOPER_USER_ID=$(az keyvault secret show --vault-name ${{ env.KEYVAULT_NAME }} --name DEVELOPER-USER-ID --query value -o tsv)" >> $GITHUB_OUTPUT
+          echo "LAVALINK_PASSWORD=$(az keyvault secret show --vault-name ${{ env.KEYVAULT_NAME }} --name LAVALINK-PASSWORD --query value -o tsv)" >> $GITHUB_OUTPUT
+          echo "SPOTIFY_CLIENT_ID=$(az keyvault secret show --vault-name ${{ env.KEYVAULT_NAME }} --name SPOTIFY-CLIENT-ID --query value -o tsv)" >> $GITHUB_OUTPUT
+          echo "SPOTIFY_CLIENT_SECRET=$(az keyvault secret show --vault-name ${{ env.KEYVAULT_NAME }} --name SPOTIFY-CLIENT-SECRET --query value -o tsv)" >> $GITHUB_OUTPUT
+          echo "RAPIDAPI_KEY=$(az keyvault secret show --vault-name ${{ env.KEYVAULT_NAME }} --name RAPIDAPI-KEY --query value -o tsv)" >> $GITHUB_OUTPUT
+          echo "RAPIDAPI_HOST=$(az keyvault secret show --vault-name ${{ env.KEYVAULT_NAME }} --name RAPIDAPI-HOST --query value -o tsv)" >> $GITHUB_OUTPUT
+          echo "INACTIVITY_TIMEOUT=$(az keyvault secret show --vault-name ${{ env.KEYVAULT_NAME }} --name INACTIVITY-TIMEOUT --query value -o tsv)" >> $GITHUB_OUTPUT
+          echo "YOUTUBE_OAUTH_REFRESH_TOKEN=$(az keyvault secret show --vault-name ${{ env.KEYVAULT_NAME }} --name YOUTUBE-OAUTH-REFRESH-TOKEN --query value -o tsv)" >> $GITHUB_OUTPUT
+
+      # ============================================
+      # Deploy Lavalink Container App
+      # ============================================
+      - name: Deploy Lavalink
+        run: |
+          # Check if Lavalink app exists
+          if az containerapp show --name delify-lavalink --resource-group ${{ env.RESOURCE_GROUP }} &>/dev/null; then
+            echo "Updating existing Lavalink app..."
+            az containerapp update \
+              --name delify-lavalink \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --set-env-vars \
+                "SERVER_PORT=2333" \
+                "SERVER_ADDRESS=0.0.0.0" \
+                "LAVALINK_SERVER_PASSWORD=${{ steps.secrets.outputs.LAVALINK_PASSWORD }}" \
+                "LAVALINK_SERVER_SOURCES_YOUTUBE=false" \
+                "LAVALINK_SERVER_SOURCES_BANDCAMP=true" \
+                "LAVALINK_SERVER_SOURCES_SOUNDCLOUD=true" \
+                "LAVALINK_SERVER_SOURCES_TWITCH=true" \
+                "LAVALINK_SERVER_SOURCES_VIMEO=true" \
+                "LAVALINK_SERVER_SOURCES_HTTP=true" \
+                "LAVALINK_SERVER_SOURCES_LOCAL=false" \
+                "LAVALINK_PLUGINS_0_DEPENDENCY=dev.lavalink.youtube:youtube-plugin:1.16.0" \
+                "LAVALINK_PLUGINS_0_SNAPSHOT=false" \
+                "LAVALINK_PLUGINS_1_DEPENDENCY=com.github.topi314.lavasrc:lavasrc-plugin:4.8.1" \
+                "LAVALINK_PLUGINS_1_SNAPSHOT=false" \
+                "PLUGINS_YOUTUBE_ENABLED=true" \
+                "PLUGINS_YOUTUBE_CLIENTS_0=TV" \
+                "PLUGINS_YOUTUBE_CLIENTS_1=TVHTML5EMBEDDED" \
+                "PLUGINS_YOUTUBE_CLIENTS_2=MUSIC" \
+                "PLUGINS_YOUTUBE_OAUTH_ENABLED=true" \
+                "PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN=${{ steps.secrets.outputs.YOUTUBE_OAUTH_REFRESH_TOKEN }}" \
+                "PLUGINS_YOUTUBE_REMOTECIPHER_URL=https://cipher.kikkia.dev/" \
+                "PLUGINS_YOUTUBE_REMOTECIPHER_USERAGENT=delify-bot" \
+                "PLUGINS_LAVASRC_PROVIDERS_0=ytsearch:\"%ISRC%\"" \
+                "PLUGINS_LAVASRC_PROVIDERS_1=ytsearch:%QUERY%" \
+                "PLUGINS_LAVASRC_SOURCES_SPOTIFY=true" \
+                "PLUGINS_LAVASRC_SPOTIFY_CLIENTID=${{ steps.secrets.outputs.SPOTIFY_CLIENT_ID }}" \
+                "PLUGINS_LAVASRC_SPOTIFY_CLIENTSECRET=${{ steps.secrets.outputs.SPOTIFY_CLIENT_SECRET }}" \
+                "PLUGINS_LAVASRC_SPOTIFY_COUNTRYCODE=US" \
+                "PLUGINS_LAVASRC_SPOTIFY_PLAYLISTLOADLIMIT=6" \
+                "PLUGINS_LAVASRC_SPOTIFY_ALBUMLOADLIMIT=6" \
+                "PLUGINS_LAVASRC_SOURCES_DEEZER=false" \
+                "PLUGINS_LAVASRC_SOURCES_APPLEMUSIC=false" \
+                "PLUGINS_LAVASRC_SOURCES_YOUTUBE=true" \
+                "LOGGING_LEVEL_ROOT=INFO" \
+                "LOGGING_LEVEL_LAVALINK=INFO"
+          else
+            echo "Creating Lavalink app..."
+            az containerapp create \
+              --name delify-lavalink \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --environment ${{ env.CONTAINER_APP_ENV }} \
+              --image ghcr.io/lavalink-devs/lavalink:4 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --ingress internal \
+              --target-port 2333 \
+              --env-vars \
+                "SERVER_PORT=2333" \
+                "SERVER_ADDRESS=0.0.0.0" \
+                "LAVALINK_SERVER_PASSWORD=${{ steps.secrets.outputs.LAVALINK_PASSWORD }}" \
+                "LAVALINK_SERVER_SOURCES_YOUTUBE=false" \
+                "LAVALINK_SERVER_SOURCES_BANDCAMP=true" \
+                "LAVALINK_SERVER_SOURCES_SOUNDCLOUD=true" \
+                "LAVALINK_SERVER_SOURCES_TWITCH=true" \
+                "LAVALINK_SERVER_SOURCES_VIMEO=true" \
+                "LAVALINK_SERVER_SOURCES_HTTP=true" \
+                "LAVALINK_SERVER_SOURCES_LOCAL=false" \
+                "LAVALINK_PLUGINS_0_DEPENDENCY=dev.lavalink.youtube:youtube-plugin:1.16.0" \
+                "LAVALINK_PLUGINS_0_SNAPSHOT=false" \
+                "LAVALINK_PLUGINS_1_DEPENDENCY=com.github.topi314.lavasrc:lavasrc-plugin:4.8.1" \
+                "LAVALINK_PLUGINS_1_SNAPSHOT=false" \
+                "PLUGINS_YOUTUBE_ENABLED=true" \
+                "PLUGINS_YOUTUBE_CLIENTS_0=TV" \
+                "PLUGINS_YOUTUBE_CLIENTS_1=TVHTML5EMBEDDED" \
+                "PLUGINS_YOUTUBE_CLIENTS_2=MUSIC" \
+                "PLUGINS_YOUTUBE_OAUTH_ENABLED=true" \
+                "PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN=${{ steps.secrets.outputs.YOUTUBE_OAUTH_REFRESH_TOKEN }}" \
+                "PLUGINS_YOUTUBE_REMOTECIPHER_URL=https://cipher.kikkia.dev/" \
+                "PLUGINS_YOUTUBE_REMOTECIPHER_USERAGENT=delify-bot" \
+                "PLUGINS_LAVASRC_PROVIDERS_0=ytsearch:\"%ISRC%\"" \
+                "PLUGINS_LAVASRC_PROVIDERS_1=ytsearch:%QUERY%" \
+                "PLUGINS_LAVASRC_SOURCES_SPOTIFY=true" \
+                "PLUGINS_LAVASRC_SPOTIFY_CLIENTID=${{ steps.secrets.outputs.SPOTIFY_CLIENT_ID }}" \
+                "PLUGINS_LAVASRC_SPOTIFY_CLIENTSECRET=${{ steps.secrets.outputs.SPOTIFY_CLIENT_SECRET }}" \
+                "PLUGINS_LAVASRC_SPOTIFY_COUNTRYCODE=US" \
+                "PLUGINS_LAVASRC_SPOTIFY_PLAYLISTLOADLIMIT=6" \
+                "PLUGINS_LAVASRC_SPOTIFY_ALBUMLOADLIMIT=6" \
+                "PLUGINS_LAVASRC_SOURCES_DEEZER=false" \
+                "PLUGINS_LAVASRC_SOURCES_APPLEMUSIC=false" \
+                "PLUGINS_LAVASRC_SOURCES_YOUTUBE=true" \
+                "LOGGING_LEVEL_ROOT=INFO" \
+                "LOGGING_LEVEL_LAVALINK=INFO"
+          fi
+
+      # ============================================
+      # Get Lavalink Internal URL
+      # ============================================
+      - name: Get Lavalink FQDN
+        id: lavalink
+        run: |
+          LAVALINK_FQDN=$(az containerapp show \
+            --name delify-lavalink \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "FQDN=$LAVALINK_FQDN" >> $GITHUB_OUTPUT
+
+      # ============================================
+      # Deploy Bot Container App
+      # ============================================
+      - name: Deploy Bot
+        run: |
+          # Get ACR credentials
+          ACR_USERNAME=$(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv)
+          ACR_PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --query passwords[0].value -o tsv)
+          
+          # Check if Bot app exists
+          if az containerapp show --name delify-bot --resource-group ${{ env.RESOURCE_GROUP }} &>/dev/null; then
+            echo "Updating existing Bot app..."
+            az containerapp update \
+              --name delify-bot \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --image ${{ env.ACR_NAME }}.azurecr.io/delify-bot:${{ github.sha }} \
+              --set-env-vars \
+                "DISCORD_TOKEN=${{ steps.secrets.outputs.DISCORD_TOKEN }}" \
+                "DISCORD_GUILD_IDS=${{ steps.secrets.outputs.DISCORD_GUILD_IDS }}" \
+                "DEVELOPER_USER_ID=${{ steps.secrets.outputs.DEVELOPER_USER_ID }}" \
+                "LAVALINK_HOST=${{ steps.lavalink.outputs.FQDN }}" \
+                "LAVALINK_PORT=443" \
+                "LAVALINK_PASSWORD=${{ steps.secrets.outputs.LAVALINK_PASSWORD }}" \
+                "LAVALINK_SECURE=true" \
+                "RAPIDAPI_KEY=${{ steps.secrets.outputs.RAPIDAPI_KEY }}" \
+                "RAPIDAPI_HOST=${{ steps.secrets.outputs.RAPIDAPI_HOST }}" \
+                "LOG_LEVEL=info" \
+                "INACTIVITY_TIMEOUT=${{ steps.secrets.outputs.INACTIVITY_TIMEOUT }}"
+          else
+            echo "Creating Bot app..."
+            az containerapp create \
+              --name delify-bot \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --environment ${{ env.CONTAINER_APP_ENV }} \
+              --image ${{ env.ACR_NAME }}.azurecr.io/delify-bot:${{ github.sha }} \
+              --registry-server ${{ env.ACR_NAME }}.azurecr.io \
+              --registry-username $ACR_USERNAME \
+              --registry-password $ACR_PASSWORD \
+              --cpu 0.25 \
+              --memory 0.5Gi \
+              --min-replicas 1 \
+              --max-replicas 1 \
+              --env-vars \
+                "DISCORD_TOKEN=${{ steps.secrets.outputs.DISCORD_TOKEN }}" \
+                "DISCORD_GUILD_IDS=${{ steps.secrets.outputs.DISCORD_GUILD_IDS }}" \
+                "DEVELOPER_USER_ID=${{ steps.secrets.outputs.DEVELOPER_USER_ID }}" \
+                "LAVALINK_HOST=${{ steps.lavalink.outputs.FQDN }}" \
+                "LAVALINK_PORT=443" \
+                "LAVALINK_PASSWORD=${{ steps.secrets.outputs.LAVALINK_PASSWORD }}" \
+                "LAVALINK_SECURE=true" \
+                "RAPIDAPI_KEY=${{ steps.secrets.outputs.RAPIDAPI_KEY }}" \
+                "RAPIDAPI_HOST=${{ steps.secrets.outputs.RAPIDAPI_HOST }}" \
+                "LOG_LEVEL=info" \
+                "INACTIVITY_TIMEOUT=${{ steps.secrets.outputs.INACTIVITY_TIMEOUT }}"
+          fi
+
+      # ============================================
+      # Output Deployment Info
+      # ============================================
+      - name: Deployment Summary
+        run: |
+          echo "🚀 Deployment Complete!"
+          echo "========================"
+          echo "Bot Image: ${{ env.ACR_NAME }}.azurecr.io/delify-bot:${{ github.sha }}"
+          echo "Lavalink: ${{ steps.lavalink.outputs.FQDN }}"
+          echo ""
+          echo "View logs with:"
+          echo "  az containerapp logs show --name delify-bot --resource-group ${{ env.RESOURCE_GROUP }} --follow"

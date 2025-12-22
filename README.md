@@ -203,6 +203,61 @@ PLUGINS_LAVASRC_SOURCES_SPOTIFY: true
 go build -o delify ./cmd/bot
 ```
 
+## ☁️ Azure Deployment
+
+Delify supports deployment to Azure Container Apps with GitHub Actions CI/CD.
+
+### Quick Setup
+
+1. **Install Azure CLI** and login:
+   ```bash
+   az login
+   ```
+
+2. **Create Azure resources**:
+   ```bash
+   # Set variables
+   RESOURCE_GROUP="delify-rg"
+   LOCATION="eastus"
+   ACR_NAME="delifyacr"
+   KEYVAULT_NAME="delify-kv"
+   CONTAINER_APP_ENV="delify-env"
+
+   # Create resources
+   az group create --name $RESOURCE_GROUP --location $LOCATION
+   az acr create --resource-group $RESOURCE_GROUP --name $ACR_NAME --sku Basic --admin-enabled true
+   az keyvault create --resource-group $RESOURCE_GROUP --name $KEYVAULT_NAME --location $LOCATION
+   az containerapp env create --resource-group $RESOURCE_GROUP --name $CONTAINER_APP_ENV --location $LOCATION
+   ```
+
+3. **Add secrets to Key Vault**:
+   ```bash
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "DISCORD-TOKEN" --value "your_token"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "DISCORD-GUILD-IDS" --value "123,456"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "SPOTIFY-CLIENT-ID" --value "your_id"
+   az keyvault secret set --vault-name $KEYVAULT_NAME --name "SPOTIFY-CLIENT-SECRET" --value "your_secret"
+   # ... add all other secrets
+   ```
+
+4. **Create service principal for GitHub**:
+   ```bash
+   az ad sp create-for-rbac --name "delify-github-actions" --role contributor \
+     --scopes /subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RESOURCE_GROUP \
+     --json-auth
+   ```
+
+5. **Add GitHub Secrets** (Settings → Secrets → Actions):
+   - `AZURE_CREDENTIALS` - JSON from step 4
+   - `ACR_NAME`, `RESOURCE_GROUP`, `KEYVAULT_NAME`, `CONTAINER_APP_ENV`
+
+6. **Push to main** - GitHub Actions will automatically deploy!
+
+### View Logs
+
+```bash
+az containerapp logs show --name delify-bot --resource-group delify-rg --follow
+```
+
 ## 📄 License
 
 MIT License - Use it however you like for your private bot!
