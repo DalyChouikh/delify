@@ -5,12 +5,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/DalyChouikh/delify/internal/components"
 	"github.com/DalyChouikh/delify/internal/config"
 	"github.com/DalyChouikh/delify/internal/embed"
 	"github.com/DalyChouikh/delify/internal/errors"
+	"github.com/DalyChouikh/delify/internal/lyrics"
 	"github.com/DalyChouikh/delify/internal/player"
 	"github.com/DalyChouikh/delify/internal/utils"
 	"github.com/disgoorg/snowflake/v2"
@@ -22,11 +25,57 @@ const (
 
 // Handler manages slash commands.
 type Handler struct {
-	session   *discordgo.Session
-	player    *player.Manager
-	logger    *slog.Logger
-	templates *embed.Templates
-	config    *config.Config
+	session      *discordgo.Session
+	player       *player.Manager
+	lyrics       *lyrics.Client
+	logger       *slog.Logger
+	templates    *embed.Templates
+	config       *config.Config
+	lyricsStates *lyricsStateManager // Track lyrics pagination state
+}
+
+// lyricsStateManager manages active lyrics sessions for pagination.
+type lyricsStateManager struct {
+	mu     sync.RWMutex
+	states map[string]*lyricsState // keyed by messageID
+}
+
+type lyricsState struct {
+	result      *lyrics.LyricsResult
+	currentPage int
+}
+
+func newLyricsStateManager() *lyricsStateManager {
+	return &lyricsStateManager{
+		states: make(map[string]*lyricsState),
+	}
+}
+
+func (m *lyricsStateManager) set(messageID string, result *lyrics.LyricsResult, page int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.states[messageID] = &lyricsState{result: result, currentPage: page}
+}
+
+func (m *lyricsStateManager) get(messageID string) (*lyricsState, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state, exists := m.states[messageID]
+	return state, exists
+}
+
+func (m *lyricsStateManager) updatePage(messageID string, page int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state, exists := m.states[messageID]; exists {
+		state.currentPage = page
+	}
+}
+
+func (m *lyricsStateManager) delete(messageID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.states, messageID)
 }
 
 // NewHandler creates a new command handler.
@@ -51,12 +100,21 @@ func NewHandler(session *discordgo.Session, playerManager *player.Manager, cfg *
 		DeveloperAvatarURL: devAvatarURL,
 	})
 
+	// Create lyrics client
+	lyricsClient := lyrics.NewClient(lyrics.Config{
+		APIKey:  cfg.Lyrics.RapidAPIKey,
+		APIHost: cfg.Lyrics.RapidAPIHost,
+		Logger:  logger,
+	})
+
 	return &Handler{
-		session:   session,
-		player:    playerManager,
-		logger:    logger,
-		templates: templates,
-		config:    cfg,
+		session:      session,
+		player:       playerManager,
+		lyrics:       lyricsClient,
+		logger:       logger,
+		templates:    templates,
+		config:       cfg,
+		lyricsStates: newLyricsStateManager(),
 	}
 }
 
@@ -123,6 +181,18 @@ func (h *Handler) Commands() []*discordgo.ApplicationCommand {
 				},
 			},
 		},
+		{
+			Name:        "lyrics",
+			Description: "Show lyrics for the current or specified song",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "query",
+					Description: "Song name and artist (optional, uses current track if empty)",
+					Required:    false,
+				},
+			},
+		},
 	}
 }
 
@@ -171,18 +241,27 @@ func (h *Handler) handleCommand(s *discordgo.Session, i *discordgo.InteractionCr
 		h.handleClear(s, i)
 	case "seek":
 		h.handleSeek(s, i)
+	case "lyrics":
+		h.handleLyrics(s, i)
 	}
 }
 
 // handleButton routes button interactions.
 func (h *Handler) handleButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Verify user is in the same voice channel
+	customID := i.MessageComponentData().CustomID
+
+	// Handle lyrics pagination separately (doesn't require voice channel)
+	if strings.HasPrefix(customID, "delify:lyrics:") {
+		h.handleLyricsPagination(s, i)
+		return
+	}
+
+	// For playback controls, verify user is in the same voice channel
 	if err := h.verifyVoiceChannel(i); err != nil {
 		h.respondEphemeralError(s, i, err)
 		return
 	}
 
-	customID := i.MessageComponentData().CustomID
 	guildID, _ := snowflake.Parse(i.GuildID)
 	ctx := context.Background()
 
@@ -218,6 +297,9 @@ func (h *Handler) handleButton(s *discordgo.Session, i *discordgo.InteractionCre
 	case components.ButtonClear:
 		count := h.player.ClearQueue(guildID)
 		h.respondWithEmbed(s, i, h.templates.QueueCleared(count), nil)
+
+	case components.ButtonLyrics:
+		h.handleLyricsButton(s, i, guildID)
 
 	case components.ButtonSeekBack30:
 		h.handleSeekButton(s, i, guildID, -30000)
@@ -554,6 +636,188 @@ func (h *Handler) handleSeek(s *discordgo.Session, i *discordgo.InteractionCreat
 		trackInfo := h.buildTrackInfo(state)
 		emb := h.templates.Seeked(trackInfo, state.CurrentTrack.Position)
 		h.respondWithEmbed(s, i, emb, nil)
+	}
+}
+
+// handleLyrics handles the /lyrics command.
+func (h *Handler) handleLyrics(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !h.lyrics.IsEnabled() {
+		h.respondEphemeralError(s, i, errors.New(errors.ErrLyricsDisabled))
+		return
+	}
+
+	// Defer reply to give us time to fetch lyrics
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	}); err != nil {
+		h.logger.Error("failed to defer response", "error", err)
+		return
+	}
+
+	// Get song title and artist
+	var title, artist string
+	options := i.ApplicationCommandData().Options
+	if len(options) > 0 && options[0].StringValue() != "" {
+		// User provided a query
+		query := options[0].StringValue()
+		parts := strings.SplitN(query, " - ", 2)
+		if len(parts) == 2 {
+			artist = strings.TrimSpace(parts[0])
+			title = strings.TrimSpace(parts[1])
+		} else {
+			title = query
+			artist = ""
+		}
+	} else {
+		// Use current track
+		guildID, _ := snowflake.Parse(i.GuildID)
+		state := h.player.GetPlayerState(guildID)
+		if state.CurrentTrack == nil || state.CurrentTrack.Track == nil {
+			h.editWithError(s, i, errors.New(errors.ErrNothingPlaying))
+			return
+		}
+		title = state.CurrentTrack.Track.Info.Title
+		artist = state.CurrentTrack.Track.Info.Author
+	}
+
+	// Fetch lyrics
+	ctx := context.Background()
+	result, err := h.lyrics.FetchLyrics(ctx, title, artist)
+	if err != nil {
+		h.logger.Warn("failed to fetch lyrics", "error", err, "title", title, "artist", artist)
+		emb := h.templates.LyricsNotFound(title, artist)
+		h.editWithEmbed(s, i, emb, nil)
+		return
+	}
+
+	// Send first page
+	emb := h.templates.LyricsDisplay(
+		result.Title,
+		result.Artist,
+		result.Pages[0],
+		result.ArtworkURL,
+		result.GeniusURL,
+		1,
+		result.TotalPages,
+	)
+	comps := components.LyricsComponents(1, result.TotalPages)
+	h.editWithEmbed(s, i, emb, comps)
+
+	// Store lyrics state for pagination (only if multiple pages)
+	if result.TotalPages > 1 {
+		// Get message ID from the response
+		msg, err := s.InteractionResponse(i.Interaction)
+		if err == nil && msg != nil {
+			h.lyricsStates.set(msg.ID, result, 1)
+		}
+	}
+}
+
+// handleLyricsButton handles the lyrics button from now playing.
+func (h *Handler) handleLyricsButton(s *discordgo.Session, i *discordgo.InteractionCreate, guildID snowflake.ID) {
+	if !h.lyrics.IsEnabled() {
+		h.respondEphemeralError(s, i, errors.New(errors.ErrLyricsDisabled))
+		return
+	}
+
+	// Get current track
+	state := h.player.GetPlayerState(guildID)
+	if state.CurrentTrack == nil || state.CurrentTrack.Track == nil {
+		h.respondEphemeralError(s, i, errors.New(errors.ErrNothingPlaying))
+		return
+	}
+
+	title := state.CurrentTrack.Track.Info.Title
+	artist := state.CurrentTrack.Track.Info.Author
+
+	// Defer reply
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	}); err != nil {
+		h.logger.Error("failed to defer response", "error", err)
+		return
+	}
+
+	// Fetch lyrics
+	ctx := context.Background()
+	result, err := h.lyrics.FetchLyrics(ctx, title, artist)
+	if err != nil {
+		h.logger.Warn("failed to fetch lyrics", "error", err, "title", title, "artist", artist)
+		emb := h.templates.LyricsNotFound(title, artist)
+		h.editWithEmbed(s, i, emb, nil)
+		return
+	}
+
+	// Send first page
+	emb := h.templates.LyricsDisplay(
+		result.Title,
+		result.Artist,
+		result.Pages[0],
+		result.ArtworkURL,
+		result.GeniusURL,
+		1,
+		result.TotalPages,
+	)
+	comps := components.LyricsComponents(1, result.TotalPages)
+	h.editWithEmbed(s, i, emb, comps)
+
+	// Store lyrics state for pagination
+	if result.TotalPages > 1 {
+		msg, err := s.InteractionResponse(i.Interaction)
+		if err == nil && msg != nil {
+			h.lyricsStates.set(msg.ID, result, 1)
+		}
+	}
+}
+
+// handleLyricsPagination handles lyrics pagination button presses.
+func (h *Handler) handleLyricsPagination(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	messageID := i.Message.ID
+	customID := i.MessageComponentData().CustomID
+
+	// Get stored lyrics state
+	state, exists := h.lyricsStates.get(messageID)
+	if !exists {
+		h.respondEphemeralError(s, i, errors.New(errors.ErrInternal).WithDetails("Lyrics session expired, please use /lyrics again"))
+		return
+	}
+
+	// Determine new page
+	newPage := state.currentPage
+	switch customID {
+	case components.ButtonLyricsPrev:
+		if newPage > 1 {
+			newPage--
+		}
+	case components.ButtonLyricsNext:
+		if newPage < state.result.TotalPages {
+			newPage++
+		}
+	}
+
+	// Update state
+	h.lyricsStates.updatePage(messageID, newPage)
+
+	// Update message
+	emb := h.templates.LyricsDisplay(
+		state.result.Title,
+		state.result.Artist,
+		state.result.Pages[newPage-1],
+		state.result.ArtworkURL,
+		state.result.GeniusURL,
+		newPage,
+		state.result.TotalPages,
+	)
+	comps := components.LyricsComponents(newPage, state.result.TotalPages)
+
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Embeds:     []*discordgo.MessageEmbed{emb},
+			Components: comps,
+		},
+	}); err != nil {
+		h.logger.Error("failed to update lyrics message", "error", err)
 	}
 }
 

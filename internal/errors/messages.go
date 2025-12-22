@@ -21,6 +21,7 @@ const (
 	ErrNotPaused        ErrorCode = "NOT_PAUSED"
 	ErrNoPermission     ErrorCode = "NO_PERMISSION"
 	ErrInvalidInput     ErrorCode = "INVALID_INPUT"
+	ErrLyricsDisabled   ErrorCode = "LYRICS_DISABLED"
 	ErrInternal         ErrorCode = "INTERNAL"
 )
 
@@ -72,6 +73,10 @@ var errorMessages = map[ErrorCode]struct {
 	ErrInvalidInput: {
 		Title:   "Invalid Input",
 		Message: "The input you provided is invalid. Please check and try again.",
+	},
+	ErrLyricsDisabled: {
+		Title:   "Lyrics Unavailable",
+		Message: "Lyrics feature is not configured. Ask the bot owner to set it up.",
 	},
 	ErrInternal: {
 		Title:   "Something Went Wrong",

@@ -72,7 +72,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	}
 
 	// Create player manager
-	b.playerManager = player.NewManager(b.lavalinkClient.Link, b.session, b.logger)
+	b.playerManager = player.NewManager(b.lavalinkClient.Link, b.session, b.config.Bot.InactivityTimeout, b.logger)
 
 	// Create command handler
 	b.commandHandler = commands.NewHandler(b.session, b.playerManager, b.config, b.logger)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgolink/v3/disgolink"
@@ -15,22 +16,26 @@ import (
 
 // Manager handles music players across all guilds.
 type Manager struct {
-	link          disgolink.Client
-	session       *discordgo.Session
-	queues        map[snowflake.ID]*Queue
-	currentTracks map[snowflake.ID]*QueuedTrack // Track who requested the current song
-	mu            sync.RWMutex
-	logger        *slog.Logger
+	link              disgolink.Client
+	session           *discordgo.Session
+	queues            map[snowflake.ID]*Queue
+	currentTracks     map[snowflake.ID]*QueuedTrack // Track who requested the current song
+	inactivityTimers  map[snowflake.ID]*time.Timer  // Inactivity timers per guild
+	inactivityTimeout time.Duration
+	mu                sync.RWMutex
+	logger            *slog.Logger
 }
 
 // NewManager creates a new player manager.
-func NewManager(link disgolink.Client, session *discordgo.Session, logger *slog.Logger) *Manager {
+func NewManager(link disgolink.Client, session *discordgo.Session, inactivityTimeout time.Duration, logger *slog.Logger) *Manager {
 	m := &Manager{
-		link:          link,
-		session:       session,
-		queues:        make(map[snowflake.ID]*Queue),
-		currentTracks: make(map[snowflake.ID]*QueuedTrack),
-		logger:        logger,
+		link:              link,
+		session:           session,
+		queues:            make(map[snowflake.ID]*Queue),
+		currentTracks:     make(map[snowflake.ID]*QueuedTrack),
+		inactivityTimers:  make(map[snowflake.ID]*time.Timer),
+		inactivityTimeout: inactivityTimeout,
+		logger:            logger,
 	}
 
 	// Register event handlers for queue management
@@ -146,6 +151,9 @@ func (m *Manager) Stop(ctx context.Context, guildID snowflake.ID) error {
 
 	// Clear the queue
 	queue.Clear()
+
+	// Cancel inactivity timer
+	m.cancelInactivityTimer(guildID)
 
 	// Clear current track info
 	m.mu.Lock()
@@ -314,7 +322,7 @@ func (m *Manager) playNext(ctx context.Context, guildID snowflake.ID) error {
 
 	queuedTrack, ok := queue.Next()
 	if !ok {
-		// Queue is empty, stop the player
+		// Queue is empty, stop the player and start inactivity timer
 		m.mu.Lock()
 		delete(m.currentTracks, guildID)
 		m.mu.Unlock()
@@ -322,8 +330,14 @@ func (m *Manager) playNext(ctx context.Context, guildID snowflake.ID) error {
 		if err := player.Update(ctx, lavalink.WithNullTrack()); err != nil {
 			return fmt.Errorf("failed to stop player: %w", err)
 		}
+
+		// Start inactivity timer
+		m.startInactivityTimer(guildID)
 		return nil
 	}
+
+	// Cancel any existing inactivity timer since we're playing
+	m.cancelInactivityTimer(guildID)
 
 	// Store current track info
 	m.mu.Lock()
@@ -335,6 +349,50 @@ func (m *Manager) playNext(ctx context.Context, guildID snowflake.ID) error {
 	}
 
 	return nil
+}
+
+// startInactivityTimer starts a timer to leave voice after inactivity.
+func (m *Manager) startInactivityTimer(guildID snowflake.ID) {
+	m.cancelInactivityTimer(guildID) // Cancel any existing timer
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.inactivityTimers[guildID] = time.AfterFunc(m.inactivityTimeout, func() {
+		m.handleInactivityTimeout(guildID)
+	})
+
+	m.logger.Debug("started inactivity timer",
+		"guild", guildID,
+		"timeout", m.inactivityTimeout,
+	)
+}
+
+// cancelInactivityTimer stops the inactivity timer for a guild.
+func (m *Manager) cancelInactivityTimer(guildID snowflake.ID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if timer, exists := m.inactivityTimers[guildID]; exists {
+		timer.Stop()
+		delete(m.inactivityTimers, guildID)
+	}
+}
+
+// handleInactivityTimeout handles the inactivity timeout by leaving voice.
+func (m *Manager) handleInactivityTimeout(guildID snowflake.ID) {
+	m.logger.Info("leaving voice channel due to inactivity", "guild", guildID)
+
+	// Clean up
+	m.mu.Lock()
+	delete(m.inactivityTimers, guildID)
+	delete(m.currentTracks, guildID)
+	m.mu.Unlock()
+
+	// Leave voice channel
+	if err := m.leaveVoiceChannel(guildID); err != nil {
+		m.logger.Warn("failed to leave voice channel on inactivity", "error", err)
+	}
 }
 
 // onTrackStart handles track start events for logging.

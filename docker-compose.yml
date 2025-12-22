@@ -56,7 +56,7 @@ services:
       PLUGINS_YOUTUBE_OAUTH_ENABLED: true
       # Set your refresh token here after completing OAuth flow once
       PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN: ${YOUTUBE_OAUTH_REFRESH_TOKEN:-}
-      
+
       # ----------------------------------------
       # Remote Cipher Server (fallback for non-TV clients)
       # ----------------------------------------
@@ -141,6 +141,7 @@ services:
       # Discord Configuration
       DISCORD_TOKEN: ${DISCORD_TOKEN}
       DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:-}
+      DEVELOPER_USER_ID: ${DEVELOPER_USER_ID:-}
 
       # Lavalink Configuration
       LAVALINK_HOST: lavalink
@@ -148,8 +149,13 @@ services:
       LAVALINK_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
       LAVALINK_SECURE: "false"
 
+      # Lyrics API (RapidAPI Genius)
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
+      RAPIDAPI_HOST: ${RAPIDAPI_HOST:-genius-song-lyrics1.p.rapidapi.com}
+
       # Bot Configuration
       LOG_LEVEL: info
+      INACTIVITY_TIMEOUT: ${INACTIVITY_TIMEOUT:-30}
 
     networks:
       - delify-network

@@ -9,7 +9,7 @@ A production-grade Discord music bot written in Go, powered by Lavalink v4 with 
   - ▶️ Pause / Resume
   - ⏭️ Skip current track
   - ⏹️ Stop playback
-  - 🗑️ Clear queue
+  - 🎤 Lyrics (with pagination)
   - ⏪/⏩ Seek (±5s, ±10s, ±30s)
 
 - **Slash Commands**: Modern Discord slash command interface
@@ -22,10 +22,14 @@ A production-grade Discord music bot written in Go, powered by Lavalink v4 with 
   - `/queue [page]` - View the queue (paginated, 10 tracks per page)
   - `/clear` - Clear the queue (keeps current song playing)
   - `/seek [time]` - Seek to a position (e.g., `1:30`, `90`, `1:30:00`)
+  - `/lyrics [query]` - Show lyrics for current track or search (with pagination)
 
+- **Lyrics Support**: Fetch and display song lyrics via Genius API
+- **Auto-Leave**: Bot automatically leaves voice channel after inactivity (configurable)
 - **Spotify Integration**: Play Spotify tracks by mirroring them via YouTube
 - **Queue System**: Automatic queue management with track progression
 - **User-Friendly Errors**: Ephemeral error messages that don't clutter the channel
+- **Lyrics Caching**: Lyrics are cached to reduce API calls
 - **Production Ready**: Clean architecture, proper error handling, graceful shutdown
 
 ## 🏗️ Architecture
@@ -53,6 +57,8 @@ delify/
 │   │   └── messages.go       # User-friendly error messages
 │   ├── lavalink/
 │   │   └── client.go         # Lavalink connection with retry
+│   ├── lyrics/
+│   │   └── client.go         # Genius lyrics API client with caching
 │   ├── player/
 │   │   ├── manager.go        # Music player management
 │   │   ├── queue.go          # Track queue implementation
@@ -72,6 +78,7 @@ delify/
 - Docker & Docker Compose
 - A Discord Bot Token ([Discord Developer Portal](https://discord.com/developers/applications))
 - Spotify API Credentials ([Spotify Developer Dashboard](https://developer.spotify.com/dashboard))
+- (Optional) RapidAPI Key for lyrics ([Genius Song Lyrics API](https://rapidapi.com/Glavier/api/genius-song-lyrics1))
 
 ### Setup
 
@@ -115,6 +122,9 @@ All configuration is done via environment variables:
 | `YT_CIPHER_USER_AGENT` | Identifier for cipher server logs | `delify-bot` |
 | `YOUTUBE_OAUTH_ENABLED` | Enable YouTube OAuth (optional) | `false` |
 | `YOUTUBE_OAUTH_REFRESH_TOKEN` | YouTube OAuth refresh token (store securely) | *none* |
+| `RAPIDAPI_KEY` | RapidAPI key for Genius lyrics | *optional* |
+| `RAPIDAPI_HOST` | RapidAPI host | `genius-song-lyrics1.p.rapidapi.com` |
+| `INACTIVITY_TIMEOUT` | Seconds before bot leaves voice when idle | `30` |
 
 ### Choosing between OAuth and Remote Cipher
 

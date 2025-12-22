@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"time"
 )
 
 // Config holds all application configuration.
@@ -11,6 +12,7 @@ type Config struct {
 	Discord  DiscordConfig
 	Lavalink LavalinkConfig
 	Bot      BotConfig
+	Lyrics   LyricsConfig
 	LogLevel string
 }
 
@@ -30,11 +32,21 @@ type LavalinkConfig struct {
 
 // BotConfig holds bot-specific configuration.
 type BotConfig struct {
-	DeveloperUserID string
+	DeveloperUserID   string
+	InactivityTimeout time.Duration
+}
+
+// LyricsConfig holds lyrics API configuration.
+type LyricsConfig struct {
+	RapidAPIKey  string
+	RapidAPIHost string
+	Enabled      bool
 }
 
 // Load reads configuration from environment variables.
 func Load() *Config {
+	rapidAPIKey := getEnv("RAPIDAPI_KEY", "")
+
 	return &Config{
 		Discord: DiscordConfig{
 			Token:   getEnv("DISCORD_TOKEN", ""),
@@ -47,7 +59,13 @@ func Load() *Config {
 			Secure:   getEnvAsBool("LAVALINK_SECURE", false),
 		},
 		Bot: BotConfig{
-			DeveloperUserID: getEnv("DEVELOPER_USER_ID", ""),
+			DeveloperUserID:   getEnv("DEVELOPER_USER_ID", ""),
+			InactivityTimeout: time.Duration(getEnvAsInt("INACTIVITY_TIMEOUT", 30)) * time.Second,
+		},
+		Lyrics: LyricsConfig{
+			RapidAPIKey:  rapidAPIKey,
+			RapidAPIHost: getEnv("RAPIDAPI_HOST", "genius-song-lyrics1.p.rapidapi.com"),
+			Enabled:      rapidAPIKey != "",
 		},
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 	}

@@ -26,4 +26,7 @@ const (
 
 	// ColorStopped is used when playback is stopped.
 	ColorStopped = 0x99AAB5
+
+	// ColorLyrics is used for lyrics display (Genius yellow).
+	ColorLyrics = 0xFFFF64
 )

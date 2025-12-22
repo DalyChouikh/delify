@@ -245,3 +245,52 @@ func (t *Templates) QueueCleared(count int) *discordgo.MessageEmbed {
 
 	return result
 }
+
+// LyricsDisplay creates a lyrics embed with pagination.
+func (t *Templates) LyricsDisplay(title, artist, lyricsPage, artworkURL, geniusURL string, page, totalPages int) *discordgo.MessageEmbed {
+	embed := New().
+		Color(ColorLyrics).
+		TitleWithURL(fmt.Sprintf("%s - %s", artist, title), geniusURL).
+		Description(lyricsPage).
+		Thumbnail(artworkURL)
+
+	result := embed.Build()
+	result.Author = BotAuthor("Lyrics 🎤", t.config.BotAvatarURL)
+	result.Footer = &discordgo.MessageEmbedFooter{
+		Text:    fmt.Sprintf("Page %d/%d • Developed by Daly ❤️", page, totalPages),
+		IconURL: t.config.DeveloperAvatarURL,
+	}
+
+	return result
+}
+
+// LyricsNotFound creates an embed for when lyrics are not found.
+func (t *Templates) LyricsNotFound(title, artist string) *discordgo.MessageEmbed {
+	embed := New().
+		Color(ColorWarning).
+		Description(fmt.Sprintf("🔍 No lyrics found for **%s** by **%s**.\n\nTry searching manually on [Genius](https://genius.com/search?q=%s%%20%s).",
+			utils.Truncate(title, 40),
+			utils.Truncate(artist, 30),
+			title,
+			artist,
+		))
+
+	result := embed.Build()
+	result.Author = BotAuthor("Lyrics Not Found", t.config.BotAvatarURL)
+	result.Footer = DeveloperFooter(t.config.DeveloperAvatarURL)
+
+	return result
+}
+
+// Disconnected creates an embed for when the bot disconnects due to inactivity.
+func (t *Templates) Disconnected() *discordgo.MessageEmbed {
+	embed := New().
+		Color(ColorStopped).
+		Description("👋 Disconnected due to inactivity.")
+
+	result := embed.Build()
+	result.Author = BotAuthor("Goodbye", t.config.BotAvatarURL)
+	result.Footer = DeveloperFooter(t.config.DeveloperAvatarURL)
+
+	return result
+}

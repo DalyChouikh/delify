@@ -14,11 +14,12 @@ const (
 	ButtonSkip   = ButtonPrefix + "skip"
 	ButtonStop   = ButtonPrefix + "stop"
 	ButtonClear  = ButtonPrefix + "clear"
+	ButtonLyrics = ButtonPrefix + "lyrics"
 
 	// Seek button IDs.
-	ButtonSeekBack30  = ButtonPrefix + "seek:-30"
-	ButtonSeekBack10  = ButtonPrefix + "seek:-10"
-	ButtonSeekBack5   = ButtonPrefix + "seek:-5"
+	ButtonSeekBack30    = ButtonPrefix + "seek:-30"
+	ButtonSeekBack10    = ButtonPrefix + "seek:-10"
+	ButtonSeekBack5     = ButtonPrefix + "seek:-5"
 	ButtonSeekForward5  = ButtonPrefix + "seek:+5"
 	ButtonSeekForward10 = ButtonPrefix + "seek:+10"
 	ButtonSeekForward30 = ButtonPrefix + "seek:+30"
@@ -27,6 +28,10 @@ const (
 	ButtonQueuePrev = ButtonPrefix + "queue:prev"
 	ButtonQueueNext = ButtonPrefix + "queue:next"
 	ButtonQueueShow = ButtonPrefix + "queue:show"
+
+	// Lyrics pagination button IDs.
+	ButtonLyricsPrev = ButtonPrefix + "lyrics:prev"
+	ButtonLyricsNext = ButtonPrefix + "lyrics:next"
 )
 
 // Button creates a new button component.
@@ -75,7 +80,7 @@ func SeekFineRow() discordgo.ActionsRow {
 			Button(ButtonSeekBack5, "-5s", discordgo.SecondaryButton, nil, false),
 			Button(ButtonSeekForward5, "+5s", discordgo.SecondaryButton, nil, false),
 			Button(ButtonSkip, "Skip", discordgo.PrimaryButton, Emoji("⏭️"), false),
-			Button(ButtonClear, "Clear", discordgo.DangerButton, Emoji("🗑️"), false),
+			Button(ButtonLyrics, "Lyrics", discordgo.SecondaryButton, Emoji("🎤"), false),
 			Button(ButtonStop, "Stop", discordgo.DangerButton, Emoji("🛑"), false),
 		},
 	}
@@ -86,6 +91,21 @@ func NowPlayingComponents(isPaused bool) []discordgo.MessageComponent {
 	return []discordgo.MessageComponent{
 		PlaybackControlsRow(isPaused),
 		SeekFineRow(),
+	}
+}
+
+// LyricsComponents returns pagination buttons for lyrics display.
+func LyricsComponents(page, totalPages int) []discordgo.MessageComponent {
+	if totalPages <= 1 {
+		return nil
+	}
+	return []discordgo.MessageComponent{
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				Button(ButtonLyricsPrev, "Previous", discordgo.SecondaryButton, Emoji("◀️"), page <= 1),
+				Button(ButtonLyricsNext, "Next", discordgo.SecondaryButton, Emoji("▶️"), page >= totalPages),
+			},
+		},
 	}
 }
 
