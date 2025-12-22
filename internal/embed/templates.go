@@ -2,6 +2,7 @@ package embed
 
 import (
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -266,13 +267,16 @@ func (t *Templates) LyricsDisplay(title, artist, lyricsPage, artworkURL, geniusU
 
 // LyricsNotFound creates an embed for when lyrics are not found.
 func (t *Templates) LyricsNotFound(title, artist string) *discordgo.MessageEmbed {
+	// Properly URL-encode the search query
+	searchQuery := url.QueryEscape(title + " " + artist)
+	geniusURL := fmt.Sprintf("https://genius.com/search?q=%s", searchQuery)
+
 	embed := New().
 		Color(ColorWarning).
-		Description(fmt.Sprintf("🔍 No lyrics found for **%s** by **%s**.\n\nTry searching manually on [Genius](https://genius.com/search?q=%s%%20%s).",
+		Description(fmt.Sprintf("🔍 No lyrics found for **%s** by **%s**.\n\nTry searching manually on [Genius](%s).",
 			utils.Truncate(title, 40),
 			utils.Truncate(artist, 30),
-			title,
-			artist,
+			geniusURL,
 		))
 
 	result := embed.Build()

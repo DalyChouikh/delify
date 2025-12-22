@@ -199,6 +199,8 @@ func (c *Client) cleanSongTitle(s string) string {
 		// Video types
 		`\s*\(official\s*(music\s*)?(video|audio|visualizer|lyric\s*video)?\)`,
 		`\s*\[official\s*(music\s*)?(video|audio|visualizer|lyric\s*video)?\]`,
+		`\s*\(official\s*radio\s*edit\)`,
+		`\s*\[official\s*radio\s*edit\]`,
 		`\s*\(lyric\s*video\)`,
 		`\s*\[lyric\s*video\]`,
 		`\s*\(lyrics?\)`,
@@ -229,6 +231,7 @@ func (c *Client) cleanSongTitle(s string) string {
 		`\s*\[clean\]`,
 		`\s*\(radio\s*edit\)`,
 		`\s*\[radio\s*edit\]`,
+		`\s*-\s*radio\s*edit`,
 		`\s*\(single\s*version\)`,
 		`\s*\[single\s*version\]`,
 		`\s*\(album\s*version\)`,
