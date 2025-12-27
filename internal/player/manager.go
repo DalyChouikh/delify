@@ -14,6 +14,59 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 )
 
+// voiceConnState tracks the voice connection state for a guild.
+type voiceConnState struct {
+	ready   chan struct{} // Closed when voice connection is ready
+	hasVoiceState  bool   // VoiceStateUpdate received
+	hasVoiceServer bool   // VoiceServerUpdate received
+	mu      sync.Mutex
+}
+
+// newVoiceConnState creates a new voice connection state tracker.
+func newVoiceConnState() *voiceConnState {
+	return &voiceConnState{
+		ready: make(chan struct{}),
+	}
+}
+
+// setVoiceState marks voice state as received and signals ready if both are received.
+func (v *voiceConnState) setVoiceState() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.hasVoiceState = true
+	v.checkReady()
+}
+
+// setVoiceServer marks voice server as received and signals ready if both are received.
+func (v *voiceConnState) setVoiceServer() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.hasVoiceServer = true
+	v.checkReady()
+}
+
+// checkReady closes the ready channel if both voice state and server are received.
+func (v *voiceConnState) checkReady() {
+	if v.hasVoiceState && v.hasVoiceServer {
+		select {
+		case <-v.ready:
+			// Already closed
+		default:
+			close(v.ready)
+		}
+	}
+}
+
+// isReady returns true if the voice connection is fully established.
+func (v *voiceConnState) isReady() bool {
+	select {
+	case <-v.ready:
+		return true
+	default:
+		return false
+	}
+}
+
 // Manager handles music players across all guilds.
 type Manager struct {
 	link              disgolink.Client
@@ -21,6 +74,7 @@ type Manager struct {
 	queues            map[snowflake.ID]*Queue
 	currentTracks     map[snowflake.ID]*QueuedTrack // Track who requested the current song
 	inactivityTimers  map[snowflake.ID]*time.Timer  // Inactivity timers per guild
+	voiceConnStates   map[snowflake.ID]*voiceConnState // Voice connection states per guild
 	inactivityTimeout time.Duration
 	mu                sync.RWMutex
 	logger            *slog.Logger
@@ -34,6 +88,7 @@ func NewManager(link disgolink.Client, session *discordgo.Session, inactivityTim
 		queues:            make(map[snowflake.ID]*Queue),
 		currentTracks:     make(map[snowflake.ID]*QueuedTrack),
 		inactivityTimers:  make(map[snowflake.ID]*time.Timer),
+		voiceConnStates:   make(map[snowflake.ID]*voiceConnState),
 		inactivityTimeout: inactivityTimeout,
 		logger:            logger,
 	}
@@ -52,9 +107,14 @@ func (m *Manager) Play(ctx context.Context, guildID, channelID snowflake.ID, que
 	player := m.link.Player(guildID)
 	queue := m.GetQueue(guildID)
 
+	// Check if we need to join voice channel (not already connected or connected to different channel)
+	needsVoiceJoin := !m.isVoiceConnected(guildID)
+
 	// Ensure bot is connected to voice channel
-	if err := m.joinVoiceChannel(guildID, channelID); err != nil {
-		return nil, fmt.Errorf("failed to join voice channel: %w", err)
+	if needsVoiceJoin {
+		if err := m.joinVoiceChannel(ctx, guildID, channelID); err != nil {
+			return nil, fmt.Errorf("failed to join voice channel: %w", err)
+		}
 	}
 
 	// Determine search prefix based on query
@@ -440,16 +500,90 @@ func isURL(s string) bool {
 	return len(s) > 8 && (s[:7] == "http://" || s[:8] == "https://")
 }
 
-// joinVoiceChannel connects the bot to a voice channel.
-func (m *Manager) joinVoiceChannel(guildID, channelID snowflake.ID) error {
+// isVoiceConnected checks if the bot is currently connected to a voice channel in the guild.
+func (m *Manager) isVoiceConnected(guildID snowflake.ID) bool {
+	m.mu.RLock()
+	state, exists := m.voiceConnStates[guildID]
+	m.mu.RUnlock()
+	
+	return exists && state.isReady()
+}
+
+// getOrCreateVoiceConnState gets or creates a voice connection state for a guild.
+func (m *Manager) getOrCreateVoiceConnState(guildID snowflake.ID) *voiceConnState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if state, exists := m.voiceConnStates[guildID]; exists {
+		return state
+	}
+
+	state := newVoiceConnState()
+	m.voiceConnStates[guildID] = state
+	return state
+}
+
+// clearVoiceConnState removes the voice connection state for a guild.
+func (m *Manager) clearVoiceConnState(guildID snowflake.ID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.voiceConnStates, guildID)
+}
+
+// OnVoiceStateUpdate should be called when a voice state update is received for the bot.
+func (m *Manager) OnVoiceStateUpdate(guildID snowflake.ID, channelID *snowflake.ID) {
+	// If channelID is nil or empty, the bot left the voice channel
+	if channelID == nil {
+		m.clearVoiceConnState(guildID)
+		return
+	}
+
+	state := m.getOrCreateVoiceConnState(guildID)
+	state.setVoiceState()
+	m.logger.Debug("voice state update received", "guild", guildID)
+}
+
+// OnVoiceServerUpdate should be called when a voice server update is received.
+func (m *Manager) OnVoiceServerUpdate(guildID snowflake.ID) {
+	state := m.getOrCreateVoiceConnState(guildID)
+	state.setVoiceServer()
+	m.logger.Debug("voice server update received", "guild", guildID)
+}
+
+// joinVoiceChannel connects the bot to a voice channel and waits for the connection to be ready.
+func (m *Manager) joinVoiceChannel(ctx context.Context, guildID, channelID snowflake.ID) error {
+	// Create a fresh voice connection state for this join attempt
+	m.mu.Lock()
+	state := newVoiceConnState()
+	m.voiceConnStates[guildID] = state
+	m.mu.Unlock()
+
+	// Request to join the voice channel
 	err := m.session.ChannelVoiceJoinManual(guildID.String(), channelID.String(), false, true)
 	if err != nil {
-		return err
+		m.clearVoiceConnState(guildID)
+		return fmt.Errorf("failed to send voice join request: %w", err)
 	}
-	return nil
+
+	// Wait for voice connection to be fully established
+	voiceTimeout := 10 * time.Second
+	select {
+	case <-state.ready:
+		m.logger.Debug("voice connection ready", "guild", guildID)
+		return nil
+	case <-time.After(voiceTimeout):
+		m.clearVoiceConnState(guildID)
+		// Try to leave since we timed out
+		_ = m.session.ChannelVoiceJoinManual(guildID.String(), "", false, false)
+		return fmt.Errorf("timed out waiting for voice connection")
+	case <-ctx.Done():
+		m.clearVoiceConnState(guildID)
+		return ctx.Err()
+	}
 }
 
 // leaveVoiceChannel disconnects the bot from voice.
 func (m *Manager) leaveVoiceChannel(guildID snowflake.ID) error {
+	m.clearVoiceConnState(guildID)
 	return m.session.ChannelVoiceJoinManual(guildID.String(), "", false, false)
 }

@@ -125,6 +125,11 @@ func (b *Bot) handleVoiceStateUpdate(s *discordgo.Session, event *discordgo.Voic
 		}
 	}
 
+	// Notify the player manager about voice state update
+	if b.playerManager != nil {
+		b.playerManager.OnVoiceStateUpdate(guildID, channelID)
+	}
+
 	b.lavalinkClient.Link.OnVoiceStateUpdate(ctx(s), guildID, channelID, event.SessionID)
 }
 
@@ -133,6 +138,11 @@ func (b *Bot) handleVoiceServerUpdate(s *discordgo.Session, event *discordgo.Voi
 	guildID, err := snowflake.Parse(event.GuildID)
 	if err != nil {
 		return
+	}
+
+	// Notify the player manager about voice server update
+	if b.playerManager != nil {
+		b.playerManager.OnVoiceServerUpdate(guildID)
 	}
 
 	b.lavalinkClient.Link.OnVoiceServerUpdate(ctx(s), guildID, event.Token, event.Endpoint)
