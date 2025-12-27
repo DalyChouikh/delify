@@ -28,26 +28,39 @@ func NewTemplates(config TemplateConfig) *Templates {
 
 // TrackInfo contains information about a track for display.
 type TrackInfo struct {
-	Title          string
-	Author         string
-	URL            string
-	Duration       lavalink.Duration
-	ArtworkURL     string
-	RequestedByID  string
-	RequestedBy    string
-	Position       int
-	QueueLength    int
-	NextTrackTitle string
+	Title           string
+	Author          string
+	URL             string
+	Duration        lavalink.Duration
+	ArtworkURL      string
+	RequestedByID   string
+	RequestedBy     string
+	Position        int
+	QueueLength     int
+	NextTrackTitle  string
 	NextTrackAuthor string
+	IsStream        bool // True for live streams (e.g., Twitch)
 }
 
 // NowPlaying creates a now playing embed.
 func (t *Templates) NowPlaying(track TrackInfo) *discordgo.MessageEmbed {
-	durationStr := utils.FormatDuration(track.Duration)
+	// Format duration or show "Streaming" for live content
+	var durationStr string
+	if track.IsStream {
+		durationStr = "🔴 Streaming"
+	} else {
+		durationStr = utils.FormatDuration(track.Duration)
+	}
+
+	// Add LIVE badge to title for streams
+	title := track.Title
+	if track.IsStream {
+		title = "🔴 " + title
+	}
 
 	embed := New().
 		Color(ColorNowPlaying).
-		TitleWithURL(track.Title, track.URL).
+		TitleWithURL(title, track.URL).
 		Thumbnail(track.ArtworkURL).
 		Field("Duration", durationStr, true).
 		Field("Requested by", MentionUser(track.RequestedByID), true)
@@ -74,11 +87,23 @@ func (t *Templates) NowPlaying(track TrackInfo) *discordgo.MessageEmbed {
 
 // AddedToQueue creates an embed for when a track is added to queue.
 func (t *Templates) AddedToQueue(track TrackInfo) *discordgo.MessageEmbed {
-	durationStr := utils.FormatDuration(track.Duration)
+	// Format duration or show "Streaming" for live content
+	var durationStr string
+	if track.IsStream {
+		durationStr = "🔴 Streaming"
+	} else {
+		durationStr = utils.FormatDuration(track.Duration)
+	}
+
+	// Add LIVE badge to title for streams
+	title := track.Title
+	if track.IsStream {
+		title = "🔴 " + title
+	}
 
 	embed := New().
 		Color(ColorInfo).
-		TitleWithURL(track.Title, track.URL).
+		TitleWithURL(title, track.URL).
 		Thumbnail(track.ArtworkURL).
 		Field("Duration", durationStr, true).
 		Field("Position", fmt.Sprintf("#%d", track.Position), true).

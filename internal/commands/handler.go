@@ -128,7 +128,7 @@ func (h *Handler) Commands() []*discordgo.ApplicationCommand {
 				{
 					Type:        discordgo.ApplicationCommandOptionString,
 					Name:        "query",
-					Description: "Song name, YouTube URL, or Spotify link",
+					Description: "Song name, YouTube/Spotify/Twitch URL",
 					Required:    true,
 				},
 			},
@@ -426,6 +426,7 @@ func (h *Handler) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreat
 			Title:         result.Track.Info.Title,
 			Author:        result.Track.Info.Author,
 			Duration:      result.Track.Info.Length,
+			IsStream:      result.Track.Info.IsStream,
 			RequestedByID: requestedByID,
 			RequestedBy:   requestedBy,
 			QueueLength:   h.player.GetQueue(guildID).Len(),
@@ -931,6 +932,7 @@ func (h *Handler) buildTrackInfo(state *player.PlayerState) embed.TrackInfo {
 		info.Title = track.Info.Title
 		info.Author = track.Info.Author
 		info.Duration = track.Info.Length
+		info.IsStream = track.Info.IsStream
 		info.RequestedByID = state.CurrentTrack.RequestedByID
 		info.RequestedBy = state.CurrentTrack.RequestedBy
 
