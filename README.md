@@ -69,9 +69,11 @@ delify/
 ├── Dockerfile                # Multi-stage Docker build
 ├── go.mod                    # Go module definition
 ├── go.sum                    # Go module checksums
+├── docker-compose.prod.yml   # Production compose for GCE (pre-built images)
 ├── .github/
 │   └── workflows/
-│       └── deploy-azure.yml  # Azure CI/CD pipeline
+│       ├── deploy-azure.yml  # Azure CI/CD pipeline
+│       └── deploy-gcp.yml    # GCP CI/CD pipeline
 └── .env.example              # Example environment variables
 ```
 
@@ -167,7 +169,183 @@ PLUGINS_LAVASRC_PROVIDERS_1: "ytsearch:%QUERY%"
 PLUGINS_LAVASRC_SOURCES_SPOTIFY: true
 ```
 
-## ☁️ Azure Deployment
+## ☁️ GCP Deployment (Compute Engine)
+
+Delify supports deployment to a Google Cloud Compute Engine VM with GitHub Actions CI/CD. On every push to `main`, the pipeline builds the bot image, pushes it to Artifact Registry, and deploys via SSH to the VM.
+
+### Prerequisites
+
+- GCP account with active billing
+- `gcloud` CLI installed and authenticated
+- GitHub repository (private or public)
+
+### Quick Setup
+
+1. **Create GCP resources**:
+   ```bash
+   # Set variables (customize as needed)
+   PROJECT_ID="your-gcp-project-id"
+   REGION="europe-west1"
+   ZONE="europe-west1-b"
+   VM_NAME="delify-vm"
+   AR_REPO="delify"
+   SA_NAME="delify-deployer"
+
+   gcloud config set project $PROJECT_ID
+
+   # Enable required APIs
+   gcloud services enable \
+     compute.googleapis.com \
+     artifactregistry.googleapis.com \
+     secretmanager.googleapis.com \
+     iamcredentials.googleapis.com
+
+   # Create Artifact Registry repository
+   gcloud artifacts repositories create $AR_REPO \
+     --repository-format=docker \
+     --location=$REGION \
+     --description="Delify Docker images"
+
+   # Create GCE VM (e2-small: 2 vCPU, 2GB RAM — good for Lavalink + bot)
+   gcloud compute instances create $VM_NAME \
+     --zone=$ZONE \
+     --machine-type=e2-small \
+     --image-family=debian-12 \
+     --image-project=debian-cloud \
+     --boot-disk-size=20GB \
+     --tags=delify \
+     --scopes=cloud-platform \
+     --metadata=startup-script='#!/bin/bash
+       apt-get update && apt-get install -y docker.io docker-compose-plugin
+       systemctl enable docker && systemctl start docker
+       usermod -aG docker $(whoami)'
+   ```
+
+2. **Add secrets to Secret Manager**:
+   ```bash
+   # Helper function
+   add_secret() {
+     echo -n "$2" | gcloud secrets create "$1" --data-file=- 2>/dev/null || \
+     echo -n "$2" | gcloud secrets versions add "$1" --data-file=-
+   }
+
+   add_secret "DISCORD_TOKEN" "your_discord_bot_token"
+   add_secret "DISCORD_GUILD_IDS" "123456789,987654321"
+   add_secret "DEVELOPER_USER_ID" "your_discord_user_id"
+   add_secret "LAVALINK_PASSWORD" "youshallnotpass"
+   add_secret "SPOTIFY_CLIENT_ID" "your_spotify_client_id"
+   add_secret "SPOTIFY_CLIENT_SECRET" "your_spotify_client_secret"
+   add_secret "RAPIDAPI_KEY" "your_rapidapi_key"
+   add_secret "RAPIDAPI_HOST" "genius-song-lyrics1.p.rapidapi.com"
+   add_secret "INACTIVITY_TIMEOUT" "30"
+   add_secret "YOUTUBE_OAUTH_REFRESH_TOKEN" "your_token_or_empty"
+   ```
+
+3. **Set up Workload Identity Federation** (keyless auth for GitHub Actions):
+   ```bash
+   # Create a Workload Identity Pool
+   gcloud iam workload-identity-pools create "github-pool" \
+     --location="global" \
+     --display-name="GitHub Actions Pool"
+
+   # Create a Provider for GitHub
+   gcloud iam workload-identity-pools providers create-oidc "github-provider" \
+     --location="global" \
+     --workload-identity-pool="github-pool" \
+     --display-name="GitHub Provider" \
+     --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
+     --attribute-condition="assertion.repository=='YOUR_GITHUB_USERNAME/delify'" \
+     --issuer-uri="https://token.actions.githubusercontent.com"
+
+   # Create a service account
+   gcloud iam service-accounts create $SA_NAME \
+     --display-name="Delify GitHub Actions Deployer"
+
+   SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+
+   # Grant necessary roles
+   gcloud projects add-iam-policy-binding $PROJECT_ID \
+     --member="serviceAccount:${SA_EMAIL}" \
+     --role="roles/compute.instanceAdmin.v1"
+
+   gcloud projects add-iam-policy-binding $PROJECT_ID \
+     --member="serviceAccount:${SA_EMAIL}" \
+     --role="roles/artifactregistry.writer"
+
+   gcloud projects add-iam-policy-binding $PROJECT_ID \
+     --member="serviceAccount:${SA_EMAIL}" \
+     --role="roles/secretmanager.secretAccessor"
+
+   gcloud projects add-iam-policy-binding $PROJECT_ID \
+     --member="serviceAccount:${SA_EMAIL}" \
+     --role="roles/iap.tunnelResourceAccessor"
+
+   # Allow GitHub Actions to impersonate the service account
+   # Replace YOUR_GITHUB_USERNAME/delify with your actual repo
+   REPO="YOUR_GITHUB_USERNAME/delify"
+   POOL_ID=$(gcloud iam workload-identity-pools describe "github-pool" \
+     --location="global" --format="value(name)")
+
+   gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
+     --role="roles/iam.workloadIdentityUser" \
+     --member="principalSet://iam.googleapis.com/${POOL_ID}/attribute.repository/${REPO}"
+
+   # Get the Workload Identity Provider resource name (needed for GitHub secret)
+   gcloud iam workload-identity-pools providers describe "github-provider" \
+     --location="global" \
+     --workload-identity-pool="github-pool" \
+     --format="value(name)"
+   ```
+
+4. **Add GitHub Secrets** (Settings → Secrets → Actions):
+
+   | Secret Name | Value |
+   |-------------|-------|
+   | `GCP_PROJECT_ID` | Your GCP project ID |
+   | `GCP_REGION` | e.g., `europe-west1` |
+   | `GCP_ZONE` | e.g., `europe-west1-b` |
+   | `GCE_INSTANCE` | e.g., `delify-vm` |
+   | `ARTIFACT_REGISTRY_REPO` | e.g., `delify` |
+   | `GCP_WORKLOAD_IDENTITY_PROVIDER` | Full provider name from step 3 |
+   | `GCP_SERVICE_ACCOUNT` | e.g., `delify-deployer@project.iam.gserviceaccount.com` |
+
+5. **Initial VM setup** (one-time):
+   ```bash
+   # SSH into the VM
+   gcloud compute ssh $VM_NAME --zone=$ZONE
+
+   # On the VM: install Docker (if not done via startup script)
+   # Copy and run: deploy/gcp/setup-vm.sh
+   ```
+
+6. **Push to main** — GitHub Actions will automatically deploy!
+
+### View Logs
+
+```bash
+# SSH and view logs
+gcloud compute ssh delify-vm --zone=europe-west1-b \
+  --command="cd ~/delify && docker compose -f docker-compose.prod.yml logs -f"
+
+# Bot logs only
+gcloud compute ssh delify-vm --zone=europe-west1-b \
+  --command="cd ~/delify && docker compose -f docker-compose.prod.yml logs -f bot"
+
+# Lavalink logs only
+gcloud compute ssh delify-vm --zone=europe-west1-b \
+  --command="cd ~/delify && docker compose -f docker-compose.prod.yml logs -f lavalink"
+```
+
+### Manual Deployment (GCE VM)
+
+1. SSH into the VM: `gcloud compute ssh delify-vm --zone=europe-west1-b`
+2. Clone the repository
+3. Configure `.env`
+4. Run `docker compose up -d`
+
+---
+
+## ☁️ Azure Deployment (Legacy)
 
 Delify supports deployment to Azure Container Apps with GitHub Actions CI/CD. On every push to `main`, the pipeline automatically builds and deploys both Lavalink and the bot.
 

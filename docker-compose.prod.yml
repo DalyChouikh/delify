@@ -1,0 +1,125 @@
+# ============================================
+# Docker Compose - Production (GCE VM)
+# ============================================
+# Used for deployment on GCP Compute Engine.
+# The bot image is pulled from Artifact Registry
+# instead of being built locally.
+#
+# Requires a .env file with:
+#   - BOT_IMAGE (set by CI/CD pipeline)
+#   - DISCORD_TOKEN
+#   - SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
+#   - LAVALINK_PASSWORD
+#   - (optional) RAPIDAPI_KEY, YOUTUBE_OAUTH_REFRESH_TOKEN, etc.
+# ============================================
+
+services:
+  # ============================================
+  # Lavalink v4 Audio Server
+  # ============================================
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4
+    container_name: delify-lavalink
+    restart: unless-stopped
+    environment:
+      # Server Configuration
+      SERVER_PORT: 2333
+      SERVER_ADDRESS: 0.0.0.0
+
+      # Lavalink Core Settings
+      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+      LAVALINK_SERVER_SOURCES_YOUTUBE: false
+      LAVALINK_SERVER_SOURCES_BANDCAMP: true
+      LAVALINK_SERVER_SOURCES_SOUNDCLOUD: true
+      LAVALINK_SERVER_SOURCES_TWITCH: true
+      LAVALINK_SERVER_SOURCES_VIMEO: true
+      LAVALINK_SERVER_SOURCES_HTTP: true
+      LAVALINK_SERVER_SOURCES_LOCAL: false
+
+      # Plugin Installation
+      LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.16.0"
+      LAVALINK_PLUGINS_0_SNAPSHOT: false
+      LAVALINK_PLUGINS_1_DEPENDENCY: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
+      LAVALINK_PLUGINS_1_SNAPSHOT: false
+
+      # YouTube Source Plugin Configuration
+      PLUGINS_YOUTUBE_ENABLED: true
+      PLUGINS_YOUTUBE_CLIENTS_0: "TV"
+      PLUGINS_YOUTUBE_CLIENTS_1: "TVHTML5EMBEDDED"
+      PLUGINS_YOUTUBE_CLIENTS_2: "MUSIC"
+
+      # YouTube OAuth Configuration
+      PLUGINS_YOUTUBE_OAUTH_ENABLED: true
+      PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN: ${YOUTUBE_OAUTH_REFRESH_TOKEN:-}
+
+      # Remote Cipher Server (fallback)
+      PLUGINS_YOUTUBE_REMOTECIPHER_URL: https://cipher.kikkia.dev/
+      PLUGINS_YOUTUBE_REMOTECIPHER_USERAGENT: delify-bot
+
+      # Logging
+      LOGGING_LEVEL_DEV_LAVALINK_YOUTUBE_HTTP_YOUTUBEOAUTH2HANDLER: INFO
+
+      # LavaSrc Configuration
+      PLUGINS_LAVASRC_PROVIDERS_0: "ytsearch:\"%ISRC%\""
+      PLUGINS_LAVASRC_PROVIDERS_1: "ytsearch:%QUERY%"
+      PLUGINS_LAVASRC_SOURCES_SPOTIFY: true
+      PLUGINS_LAVASRC_SPOTIFY_CLIENTID: ${SPOTIFY_CLIENT_ID}
+      PLUGINS_LAVASRC_SPOTIFY_CLIENTSECRET: ${SPOTIFY_CLIENT_SECRET}
+      PLUGINS_LAVASRC_SPOTIFY_COUNTRYCODE: "US"
+      PLUGINS_LAVASRC_SPOTIFY_PLAYLISTLOADLIMIT: 6
+      PLUGINS_LAVASRC_SPOTIFY_ALBUMLOADLIMIT: 6
+      PLUGINS_LAVASRC_SOURCES_DEEZER: false
+      PLUGINS_LAVASRC_SOURCES_APPLEMUSIC: false
+      PLUGINS_LAVASRC_SOURCES_YOUTUBE: true
+
+      # Logging
+      LOGGING_LEVEL_ROOT: INFO
+      LOGGING_LEVEL_LAVALINK: INFO
+      LOGGING_LEVEL_DEV_LAVALINK_YOUTUBE: INFO
+
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -s --connect-timeout 5 http://localhost:2333/version > /dev/null" ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+    networks:
+      - delify-network
+
+  # ============================================
+  # Discord Bot (Go Application)
+  # ============================================
+  bot:
+    image: ${BOT_IMAGE:-delify-bot:latest}
+    container_name: delify-bot
+    restart: unless-stopped
+    depends_on:
+      lavalink:
+        condition: service_healthy
+    environment:
+      # Discord Configuration
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DISCORD_GUILD_IDS: ${DISCORD_GUILD_IDS:-}
+      DEVELOPER_USER_ID: ${DEVELOPER_USER_ID:-}
+
+      # Lavalink Configuration (internal Docker network)
+      LAVALINK_HOST: lavalink
+      LAVALINK_PORT: 2333
+      LAVALINK_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+      LAVALINK_SECURE: "false"
+
+      # Lyrics API (RapidAPI Genius)
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
+      RAPIDAPI_HOST: ${RAPIDAPI_HOST:-genius-song-lyrics1.p.rapidapi.com}
+
+      # Bot Configuration
+      LOG_LEVEL: info
+      INACTIVITY_TIMEOUT: ${INACTIVITY_TIMEOUT:-30}
+
+    networks:
+      - delify-network
+
+networks:
+  delify-network:
+    driver: bridge
