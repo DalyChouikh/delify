@@ -1,0 +1,19 @@
+app = "delify-bot"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  LAVALINK_HOST = "delify-lavalink.flycast"
+  LAVALINK_PORT = "2333"
+  LAVALINK_SECURE = "false"
+  LOG_LEVEL = "info"
+  RAPIDAPI_HOST = "genius-song-lyrics1.p.rapidapi.com"
+  INACTIVITY_TIMEOUT = "30"
+
+[[restart]]
+  policy = "always"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

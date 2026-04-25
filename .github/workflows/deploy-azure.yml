@@ -1,13 +1,10 @@
 # Deploy Delify to Azure Container Apps
-# Triggers on push to main branch only
+# Legacy workflow (manual trigger only)
 
 name: Deploy to Azure
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch: # Legacy manual workflow only
 
 env:
   ACR_NAME: ${{ secrets.ACR_NAME }}

@@ -72,8 +72,9 @@ delify/
 ├── docker-compose.prod.yml   # Production compose for GCE (pre-built images)
 ├── .github/
 │   └── workflows/
-│       ├── deploy-azure.yml  # Azure CI/CD pipeline
-│       └── deploy-gcp.yml    # GCP CI/CD pipeline
+│       ├── deploy-fly.yml    # Fly.io CI/CD pipeline (active)
+│       ├── deploy-azure.yml  # Azure CI/CD pipeline (legacy/manual)
+│       └── deploy-gcp.yml    # GCP CI/CD pipeline (legacy/manual)
 └── .env.example              # Example environment variables
 ```
 
@@ -174,7 +175,72 @@ PLUGINS_LAVASRC_SOURCES_SPOTIFY: true
 - If logs show `YouTube is no longer supported in this application or device.`, make sure you are on `youtube-plugin:1.18.0` or newer.
 - If logs show `websocket closed ... code=4017 reason="E2EE/DAVE protocol required"`, the target Discord voice server requires DAVE/E2EE. Use a voice channel/server where DAVE is not required.
 
-## ☁️ GCP Deployment (Compute Engine)
+## ☁️ Fly.io Deployment (Recommended)
+
+Delify now ships with Fly.io app configs and CI deployment workflow:
+
+- `fly.lavalink.toml` for Lavalink (private Flycast TCP service on port `2333`)
+- `fly.bot.toml` for the Discord bot
+- `.github/workflows/deploy-fly.yml` for automatic deploys on push to `main`
+
+### Why this setup
+
+- Lavalink is private-only over Flycast (`delify-lavalink.flycast`), not publicly exposed.
+- Bot and Lavalink are split into separate apps for independent deploys and scaling.
+- GitHub Actions syncs secrets on every deploy before rolling out each app.
+
+### One-time bootstrap
+
+```bash
+# Create apps (if they don't exist yet)
+fly apps create delify-lavalink
+fly apps create delify-bot
+
+# First Lavalink deploy: private Flycast only, no public IP
+fly deploy -a delify-lavalink -c fly.lavalink.toml --flycast --no-public-ips --remote-only
+
+# Bot deploy
+fly deploy -a delify-bot -c fly.bot.toml --no-public-ips --remote-only
+```
+
+If `delify-lavalink` ever has public IPs from an older deploy, remove them:
+
+```bash
+fly ips list -a delify-lavalink
+fly ips release <public-ip> -a delify-lavalink
+```
+
+### GitHub Actions secrets to add/update
+
+| Secret Name | Required | Used By | Notes |
+|-------------|----------|---------|-------|
+| `FLY_API_TOKEN` | ✅ | Fly workflow | Create with `fly tokens create deploy -x 999999h` |
+| `DISCORD_TOKEN` | ✅ | bot | Discord bot token |
+| `LAVALINK_PASSWORD` | ✅ | bot + lavalink | Must match on both apps |
+| `SPOTIFY_CLIENT_ID` | ✅ | lavalink | Spotify API client ID |
+| `SPOTIFY_CLIENT_SECRET` | ✅ | lavalink | Spotify API client secret |
+| `YOUTUBE_OAUTH_REFRESH_TOKEN` | Optional | lavalink | For YouTube OAuth playback access |
+| `DISCORD_GUILD_IDS` | Optional | bot | Comma-separated guild IDs |
+| `DEVELOPER_USER_ID` | Optional | bot | Footer/avatar user ID |
+| `RAPIDAPI_KEY` | Optional | bot | Genius lyrics via RapidAPI |
+| `RAPIDAPI_HOST` | Optional | bot | Defaults to `genius-song-lyrics1.p.rapidapi.com` |
+| `INACTIVITY_TIMEOUT` | Optional | bot | Seconds before auto-leave |
+
+### Manual deploys
+
+```bash
+fly deploy -a delify-lavalink -c fly.lavalink.toml --flycast --no-public-ips --remote-only
+fly deploy -a delify-bot -c fly.bot.toml --no-public-ips --remote-only
+```
+
+### Logs
+
+```bash
+fly logs -a delify-lavalink
+fly logs -a delify-bot
+```
+
+## ☁️ GCP Deployment (Legacy)
 
 Delify supports deployment to a Google Cloud Compute Engine VM with GitHub Actions CI/CD. On every push to `main`, the pipeline builds the bot image, pushes it to Artifact Registry, and deploys via SSH to the VM.
 

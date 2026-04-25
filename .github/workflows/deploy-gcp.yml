@@ -1,5 +1,5 @@
 # Deploy Delify to Google Cloud Platform (Compute Engine)
-# Triggers on push to main branch only
+# Legacy workflow (manual trigger only)
 #
 # This workflow:
 # 1. Builds the bot Docker image and pushes it to Artifact Registry
@@ -10,10 +10,7 @@
 name: Deploy to GCP
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch: # Legacy manual workflow only
 
 env:
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
