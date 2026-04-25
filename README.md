@@ -158,7 +158,7 @@ The `docker-compose.yml` configures Lavalink entirely via environment variables,
 
 ```yaml
 # Plugin installation at runtime
-LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.16.0"
+LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.18.0"
 LAVALINK_PLUGINS_0_SNAPSHOT: false
 LAVALINK_PLUGINS_1_DEPENDENCY: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
 LAVALINK_PLUGINS_1_SNAPSHOT: false
@@ -168,6 +168,11 @@ PLUGINS_LAVASRC_PROVIDERS_0: "ytsearch:\"%ISRC%\""
 PLUGINS_LAVASRC_PROVIDERS_1: "ytsearch:%QUERY%"
 PLUGINS_LAVASRC_SOURCES_SPOTIFY: true
 ```
+
+### Troubleshooting playback
+
+- If logs show `YouTube is no longer supported in this application or device.`, make sure you are on `youtube-plugin:1.18.0` or newer.
+- If logs show `websocket closed ... code=4017 reason="E2EE/DAVE protocol required"`, the target Discord voice server requires DAVE/E2EE. Use a voice channel/server where DAVE is not required.
 
 ## ☁️ GCP Deployment (Compute Engine)
 

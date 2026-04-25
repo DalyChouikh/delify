@@ -16,10 +16,10 @@ import (
 
 // voiceConnState tracks the voice connection state for a guild.
 type voiceConnState struct {
-	ready   chan struct{} // Closed when voice connection is ready
-	hasVoiceState  bool   // VoiceStateUpdate received
-	hasVoiceServer bool   // VoiceServerUpdate received
-	mu      sync.Mutex
+	ready          chan struct{} // Closed when voice connection is ready
+	hasVoiceState  bool          // VoiceStateUpdate received
+	hasVoiceServer bool          // VoiceServerUpdate received
+	mu             sync.Mutex
 }
 
 // newVoiceConnState creates a new voice connection state tracker.
@@ -72,8 +72,8 @@ type Manager struct {
 	link              disgolink.Client
 	session           *discordgo.Session
 	queues            map[snowflake.ID]*Queue
-	currentTracks     map[snowflake.ID]*QueuedTrack // Track who requested the current song
-	inactivityTimers  map[snowflake.ID]*time.Timer  // Inactivity timers per guild
+	currentTracks     map[snowflake.ID]*QueuedTrack    // Track who requested the current song
+	inactivityTimers  map[snowflake.ID]*time.Timer     // Inactivity timers per guild
 	voiceConnStates   map[snowflake.ID]*voiceConnState // Voice connection states per guild
 	inactivityTimeout time.Duration
 	mu                sync.RWMutex
@@ -117,8 +117,8 @@ func (m *Manager) Play(ctx context.Context, guildID, channelID snowflake.ID, que
 		}
 	}
 
-	// Determine search prefix based on query
-	searchQuery := m.buildSearchQuery(query)
+	// Build ordered search queries. We try YouTube first, then SoundCloud fallback for plain text.
+	searchQueries := m.buildSearchQueries(query)
 
 	// Load tracks
 	var result *PlayResult
@@ -127,9 +127,38 @@ func (m *Manager) Play(ctx context.Context, guildID, channelID snowflake.ID, que
 		return nil, fmt.Errorf("no available Lavalink node")
 	}
 
-	loadResult, err := node.LoadTracks(ctx, searchQuery)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load tracks: %w", err)
+	var (
+		loadResult *lavalink.LoadResult
+		loadErr    error
+		loaded     bool
+	)
+
+	for i, searchQuery := range searchQueries {
+		loadResult, loadErr = node.LoadTracks(ctx, searchQuery)
+		if loadErr != nil {
+			if i == len(searchQueries)-1 {
+				return nil, fmt.Errorf("failed to load tracks: %w", loadErr)
+			}
+			m.logger.Warn("search attempt failed, trying fallback",
+				"search_query", searchQuery,
+				"error", loadErr,
+			)
+			continue
+		}
+
+		if _, isEmpty := loadResult.Data.(lavalink.Empty); isEmpty && i < len(searchQueries)-1 {
+			m.logger.Info("search returned no tracks, trying fallback",
+				"search_query", searchQuery,
+			)
+			continue
+		}
+
+		loaded = true
+		break
+	}
+
+	if !loaded {
+		return nil, fmt.Errorf("no tracks found for query: %s", query)
 	}
 
 	switch data := loadResult.Data.(type) {
@@ -484,15 +513,18 @@ func (m *Manager) onTrackException(player disgolink.Player, event lavalink.Track
 	)
 }
 
-// buildSearchQuery adds appropriate search prefix based on query type.
-func (m *Manager) buildSearchQuery(query string) string {
-	// Check if it's already a URL
+// buildSearchQueries returns search queries ordered by preference.
+func (m *Manager) buildSearchQueries(query string) []string {
+	// URLs should be loaded directly.
 	if isURL(query) {
-		return query
+		return []string{query}
 	}
 
-	// Default to YouTube search
-	return "ytsearch:" + query
+	// Plain text searches: prefer YouTube and fallback to SoundCloud if empty.
+	return []string{
+		"ytsearch:" + query,
+		"scsearch:" + query,
+	}
 }
 
 // isURL checks if the string is a URL.
@@ -505,7 +537,7 @@ func (m *Manager) isVoiceConnected(guildID snowflake.ID) bool {
 	m.mu.RLock()
 	state, exists := m.voiceConnStates[guildID]
 	m.mu.RUnlock()
-	
+
 	return exists && state.isReady()
 }
 

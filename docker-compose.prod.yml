@@ -18,7 +18,7 @@ services:
   # Lavalink v4 Audio Server
   # ============================================
   lavalink:
-    image: ghcr.io/lavalink-devs/lavalink:4
+    image: ghcr.io/lavalink-devs/lavalink:800c2ae
     container_name: delify-lavalink
     restart: unless-stopped
     environment:
@@ -37,7 +37,7 @@ services:
       LAVALINK_SERVER_SOURCES_LOCAL: false
 
       # Plugin Installation
-      LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.16.0"
+      LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.18.0"
       LAVALINK_PLUGINS_0_SNAPSHOT: false
       LAVALINK_PLUGINS_1_DEPENDENCY: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
       LAVALINK_PLUGINS_1_SNAPSHOT: false
@@ -45,16 +45,18 @@ services:
       # YouTube Source Plugin Configuration
       PLUGINS_YOUTUBE_ENABLED: true
       PLUGINS_YOUTUBE_CLIENTS_0: "TV"
-      PLUGINS_YOUTUBE_CLIENTS_1: "TVHTML5EMBEDDED"
-      PLUGINS_YOUTUBE_CLIENTS_2: "MUSIC"
+      PLUGINS_YOUTUBE_CLIENTS_1: "ANDROID_VR"
+      PLUGINS_YOUTUBE_CLIENTS_2: "WEB"
+      PLUGINS_YOUTUBE_CLIENTS_3: "WEBEMBEDDED"
+      PLUGINS_YOUTUBE_CLIENTS_4: "MUSIC"
 
       # YouTube OAuth Configuration
-      PLUGINS_YOUTUBE_OAUTH_ENABLED: true
+      PLUGINS_YOUTUBE_OAUTH_ENABLED: ${YOUTUBE_OAUTH_ENABLED:-true}
       PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN: ${YOUTUBE_OAUTH_REFRESH_TOKEN:-}
 
       # Remote Cipher Server (fallback)
-      PLUGINS_YOUTUBE_REMOTECIPHER_URL: https://cipher.kikkia.dev/
-      PLUGINS_YOUTUBE_REMOTECIPHER_USERAGENT: delify-bot
+      PLUGINS_YOUTUBE_REMOTECIPHER_URL: ${YT_CIPHER_URL:-https://cipher.kikkia.dev/}
+      PLUGINS_YOUTUBE_REMOTECIPHER_USERAGENT: ${YT_CIPHER_USER_AGENT:-delify-bot}
 
       # Logging
       LOGGING_LEVEL_DEV_LAVALINK_YOUTUBE_HTTP_YOUTUBEOAUTH2HANDLER: INFO

@@ -3,7 +3,7 @@ services:
   # Lavalink v4 Audio Server
   # ============================================
   lavalink:
-    image: ghcr.io/lavalink-devs/lavalink:4
+    image: ghcr.io/lavalink-devs/lavalink:800c2ae
     container_name: delify-lavalink
     restart: unless-stopped
     ports:
@@ -32,7 +32,7 @@ services:
       # Plugin Installation (via env vars)
       # ----------------------------------------
       # YouTube Source Plugin (required for LavaSrc YouTube search)
-      LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.16.0"
+      LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.18.0"
       LAVALINK_PLUGINS_0_SNAPSHOT: false
 
       # LavaSrc Plugin (for Spotify support)
@@ -43,25 +43,27 @@ services:
       # YouTube Source Plugin Configuration
       # ----------------------------------------
       PLUGINS_YOUTUBE_ENABLED: true
-      # Use TV client which works best with OAuth (doesn't need cipher when authenticated)
+      # Valid youtube-source clients (includes OAuth-compatible TV client)
       PLUGINS_YOUTUBE_CLIENTS_0: "TV"
-      PLUGINS_YOUTUBE_CLIENTS_1: "TVHTML5EMBEDDED"
-      PLUGINS_YOUTUBE_CLIENTS_2: "MUSIC"
+      PLUGINS_YOUTUBE_CLIENTS_1: "ANDROID_VR"
+      PLUGINS_YOUTUBE_CLIENTS_2: "WEB"
+      PLUGINS_YOUTUBE_CLIENTS_3: "WEBEMBEDDED"
+      PLUGINS_YOUTUBE_CLIENTS_4: "MUSIC"
 
       # ----------------------------------------
       # YouTube OAuth Configuration
       # Authenticates as a real user to bypass restrictions
-      # TV and TVHTML5EMBEDDED clients require OAuth for playback
+      # OAuth can still be enabled to improve access for restricted videos
       # ----------------------------------------
-      PLUGINS_YOUTUBE_OAUTH_ENABLED: true
+      PLUGINS_YOUTUBE_OAUTH_ENABLED: ${YOUTUBE_OAUTH_ENABLED:-true}
       # Set your refresh token here after completing OAuth flow once
       PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN: ${YOUTUBE_OAUTH_REFRESH_TOKEN:-}
 
       # ----------------------------------------
       # Remote Cipher Server (fallback for non-TV clients)
       # ----------------------------------------
-      PLUGINS_YOUTUBE_REMOTECIPHER_URL: https://cipher.kikkia.dev/
-      PLUGINS_YOUTUBE_REMOTECIPHER_USERAGENT: delify-bot
+      PLUGINS_YOUTUBE_REMOTECIPHER_URL: ${YT_CIPHER_URL:-https://cipher.kikkia.dev/}
+      PLUGINS_YOUTUBE_REMOTECIPHER_USERAGENT: ${YT_CIPHER_USER_AGENT:-delify-bot}
 
       # Logging for OAuth
       LOGGING_LEVEL_DEV_LAVALINK_YOUTUBE_HTTP_YOUTUBEOAUTH2HANDLER: INFO
