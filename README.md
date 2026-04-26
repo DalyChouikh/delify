@@ -197,10 +197,10 @@ fly apps create delify-lavalink
 fly apps create delify-bot
 
 # First Lavalink deploy: private Flycast only, no public IP
-fly deploy -a delify-lavalink -c fly.lavalink.toml --flycast --no-public-ips --remote-only
+fly deploy -a delify-lavalink -c fly.lavalink.toml --flycast --no-public-ips --remote-only --ha=false --wait-timeout 15m
 
 # Bot deploy
-fly deploy -a delify-bot -c fly.bot.toml --no-public-ips --remote-only
+fly deploy -a delify-bot -c fly.bot.toml --no-public-ips --remote-only --ha=false --wait-timeout 15m
 ```
 
 If `delify-lavalink` ever has public IPs from an older deploy, remove them:
@@ -215,6 +215,7 @@ fly ips release <public-ip> -a delify-lavalink
 | Secret Name | Required | Used By | Notes |
 |-------------|----------|---------|-------|
 | `FLY_API_TOKEN` | ✅ | Fly workflow | Create with `fly tokens create deploy -x 999999h` |
+| `FLY_PRIMARY_REGION` | Optional | Fly workflow | Example: `iad`, `cdg`, `sjc`; sets `--primary-region` for both apps |
 | `DISCORD_TOKEN` | ✅ | bot | Discord bot token |
 | `LAVALINK_PASSWORD` | ✅ | bot + lavalink | Must match on both apps |
 | `SPOTIFY_CLIENT_ID` | ✅ | lavalink | Spotify API client ID |
@@ -229,8 +230,8 @@ fly ips release <public-ip> -a delify-lavalink
 ### Manual deploys
 
 ```bash
-fly deploy -a delify-lavalink -c fly.lavalink.toml --flycast --no-public-ips --remote-only
-fly deploy -a delify-bot -c fly.bot.toml --no-public-ips --remote-only
+fly deploy -a delify-lavalink -c fly.lavalink.toml --flycast --no-public-ips --remote-only --ha=false --wait-timeout 15m
+fly deploy -a delify-bot -c fly.bot.toml --no-public-ips --remote-only --ha=false --wait-timeout 15m
 ```
 
 ### Logs

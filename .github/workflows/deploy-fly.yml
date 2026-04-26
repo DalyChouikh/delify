@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_PRIMARY_REGION: ${{ secrets.FLY_PRIMARY_REGION }}
       LAVALINK_PASSWORD: ${{ secrets.LAVALINK_PASSWORD }}
       SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
       SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
@@ -58,12 +59,32 @@ jobs:
 
       - name: Deploy Lavalink app
         run: |
-          flyctl deploy \
-            -a delify-lavalink \
-            -c fly.lavalink.toml \
-            --remote-only \
-            --flycast \
+          set -euo pipefail
+          deploy_args=(
+            -a delify-lavalink
+            -c fly.lavalink.toml
+            --remote-only
+            --flycast
             --no-public-ips
+            --ha=false
+            --wait-timeout=15m
+          )
+          if [ -n "${FLY_PRIMARY_REGION:-}" ]; then
+            deploy_args+=(--primary-region "${FLY_PRIMARY_REGION}")
+          fi
+          flyctl deploy "${deploy_args[@]}"
+
+      - name: Lavalink diagnostics on failure
+        if: failure()
+        run: |
+          set +e
+          echo "=== fly status ==="
+          flyctl status -a delify-lavalink
+          echo "=== machine list ==="
+          flyctl machine list -a delify-lavalink
+          echo "=== recent logs (45s capture) ==="
+          timeout 45s flyctl logs -a delify-lavalink
+          true
 
   deploy-bot:
     name: Deploy Bot (Fly)
@@ -71,6 +92,7 @@ jobs:
     needs: deploy-lavalink
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_PRIMARY_REGION: ${{ secrets.FLY_PRIMARY_REGION }}
       DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
       LAVALINK_PASSWORD: ${{ secrets.LAVALINK_PASSWORD }}
       DISCORD_GUILD_IDS: ${{ secrets.DISCORD_GUILD_IDS }}
@@ -127,8 +149,28 @@ jobs:
 
       - name: Deploy Bot app
         run: |
-          flyctl deploy \
-            -a delify-bot \
-            -c fly.bot.toml \
-            --remote-only \
+          set -euo pipefail
+          deploy_args=(
+            -a delify-bot
+            -c fly.bot.toml
+            --remote-only
             --no-public-ips
+            --ha=false
+            --wait-timeout=15m
+          )
+          if [ -n "${FLY_PRIMARY_REGION:-}" ]; then
+            deploy_args+=(--primary-region "${FLY_PRIMARY_REGION}")
+          fi
+          flyctl deploy "${deploy_args[@]}"
+
+      - name: Bot diagnostics on failure
+        if: failure()
+        run: |
+          set +e
+          echo "=== fly status ==="
+          flyctl status -a delify-bot
+          echo "=== machine list ==="
+          flyctl machine list -a delify-bot
+          echo "=== recent logs (45s capture) ==="
+          timeout 45s flyctl logs -a delify-bot
+          true
