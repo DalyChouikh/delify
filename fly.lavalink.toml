@@ -45,6 +45,9 @@ app = "delify-lavalink"
   LOGGING_LEVEL_LAVALINK = "INFO"
   LOGGING_LEVEL_DEV_LAVALINK_YOUTUBE = "INFO"
 
+  # Cap JVM heap — leaves ~150mb for JVM non-heap + OS overhead within 512mb container
+  JAVA_TOOL_OPTIONS = "-Xmx350m -Xms128m"
+
 [[services]]
   internal_port = 2333
   protocol = "tcp"
@@ -56,10 +59,10 @@ app = "delify-lavalink"
     port = 2333
 
   [[services.tcp_checks]]
-    grace_period = "20s"
+    grace_period = "40s"
     interval = "15s"
     timeout = "2s"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "1gb"
+  memory = "512mb"
