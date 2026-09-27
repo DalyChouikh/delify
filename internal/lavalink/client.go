@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/DalyChouikh/delify/internal/config"
+	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgolink/v3/disgolink"
 	"github.com/disgoorg/disgolink/v3/lavalink"
 	"github.com/disgoorg/snowflake/v2"
@@ -27,11 +27,10 @@ func NewClient(session *discordgo.Session, cfg config.LavalinkConfig, logger *sl
 	// Create the disgolink client
 	link := disgolink.New(
 		snowflake.ID(mustParseSnowflake(session.State.User.ID)),
+		disgolink.WithLogger(logger),
 		disgolink.WithListenerFunc(onPlayerPause),
 		disgolink.WithListenerFunc(onPlayerResume),
-		disgolink.WithListenerFunc(onTrackStart),
 		disgolink.WithListenerFunc(onTrackEnd),
-		disgolink.WithListenerFunc(onTrackException),
 		disgolink.WithListenerFunc(onTrackStuck),
 		disgolink.WithListenerFunc(onWebSocketClosed),
 	)
@@ -74,7 +73,9 @@ func (c *Client) Connect(ctx context.Context) error {
 				"error", err,
 				"retry_in", retryDelay,
 			)
-			time.Sleep(retryDelay)
+			if err := waitForRetry(ctx, retryDelay); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -85,7 +86,9 @@ func (c *Client) Connect(ctx context.Context) error {
 				"error", err,
 				"retry_in", retryDelay,
 			)
-			time.Sleep(retryDelay)
+			if err := waitForRetry(ctx, retryDelay); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -99,7 +102,6 @@ func (c *Client) Connect(ctx context.Context) error {
 }
 
 // checkLavalinkHealth verifies the Lavalink server is responding.
-// We accept 401 (Unauthorized) as a valid response - it means the server is up.
 func (c *Client) checkLavalinkHealth(ctx context.Context) error {
 	protocol := "http"
 	if c.config.Secure {
@@ -112,6 +114,7 @@ func (c *Client) checkLavalinkHealth(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Authorization", c.config.Password)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
@@ -120,12 +123,22 @@ func (c *Client) checkLavalinkHealth(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 
-	// Accept 200 OK or 401 Unauthorized (server is up but requires auth)
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusUnauthorized {
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	return nil
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // Close gracefully shuts down the Lavalink client.

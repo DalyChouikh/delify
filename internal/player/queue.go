@@ -49,6 +49,7 @@ func (q *Queue) Next() (QueuedTrack, bool) {
 	}
 
 	track := q.tracks[0]
+	q.tracks[0] = QueuedTrack{}
 	q.tracks = q.tracks[1:]
 	return track, true
 }
@@ -97,7 +98,7 @@ func (q *Queue) GetPage(page, pageSize int) ([]QueuedTrack, int, int) {
 	defer q.mu.Unlock()
 
 	total := len(q.tracks)
-	if total == 0 {
+	if total == 0 || pageSize <= 0 {
 		return nil, 0, 0
 	}
 
