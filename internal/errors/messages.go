@@ -2,8 +2,8 @@
 package errors
 
 import (
-	"github.com/bwmarrin/discordgo"
 	"github.com/DalyChouikh/delify/internal/embed"
+	"github.com/bwmarrin/discordgo"
 )
 
 // ErrorCode represents a specific error type.

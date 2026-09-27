@@ -1,7 +1,10 @@
 # ============================================
 # Stage 1: Build the Go binary
 # ============================================
-FROM golang:1.25.4-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
@@ -14,18 +17,19 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY . .
+COPY cmd/ cmd/
+COPY internal/ internal/
 
 # Build the binary with optimizations
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s -extldflags '-static'" \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -trimpath -ldflags="-w -s" \
     -o /build/delify \
     ./cmd/bot
 
 # ============================================
 # Stage 2: Minimal runtime image
 # ============================================
-FROM alpine:3.19
+FROM alpine:3.24
 
 # Install CA certificates for HTTPS requests
 RUN apk add --no-cache ca-certificates

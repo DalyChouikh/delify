@@ -3,9 +3,11 @@ package utils
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/disgoorg/disgolink/v3/lavalink"
 )
@@ -31,60 +33,38 @@ func FormatDurationMs(ms int64) string {
 // ParseDuration parses a duration string (e.g., "1:30", "90", "1:30:00") to milliseconds.
 func ParseDuration(s string) (int64, error) {
 	s = strings.TrimSpace(s)
-
-	// Try parsing as plain seconds
-	if !strings.Contains(s, ":") {
-		seconds, err := strconv.ParseInt(s, 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid duration format")
-		}
-		return seconds * 1000, nil
-	}
-
 	parts := strings.Split(s, ":")
-	var hours, minutes, seconds int64
-	var err error
-
-	switch len(parts) {
-	case 2: // MM:SS
-		minutes, err = strconv.ParseInt(parts[0], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid minutes")
-		}
-		seconds, err = strconv.ParseInt(parts[1], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid seconds")
-		}
-	case 3: // HH:MM:SS
-		hours, err = strconv.ParseInt(parts[0], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid hours")
-		}
-		minutes, err = strconv.ParseInt(parts[1], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid minutes")
-		}
-		seconds, err = strconv.ParseInt(parts[2], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid seconds")
-		}
-	default:
+	if len(parts) > 3 {
 		return 0, fmt.Errorf("invalid duration format")
 	}
-
-	totalMs := (hours*3600 + minutes*60 + seconds) * 1000
-	return totalMs, nil
+	const maxSeconds = math.MaxInt64 / 1000
+	var totalSeconds int64
+	for i, part := range parts {
+		value, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || value < 0 || (i > 0 && value >= 60) {
+			return 0, fmt.Errorf("invalid duration component")
+		}
+		if value > maxSeconds || totalSeconds > (maxSeconds-value)/60 {
+			return 0, fmt.Errorf("duration is too large")
+		}
+		totalSeconds = totalSeconds*60 + value
+	}
+	return totalSeconds * 1000, nil
 }
 
 // Truncate truncates a string to the specified length, adding "..." if truncated.
 func Truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	if maxLen <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= maxLen {
 		return s
 	}
+	runes := []rune(s)
 	if maxLen <= 3 {
-		return s[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
 // GetUserAvatarURL returns the avatar URL for a Discord user.

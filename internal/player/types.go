@@ -29,23 +29,27 @@ type QueuedTrack struct {
 
 // TrackDisplayInfo provides display-ready track information.
 type TrackDisplayInfo struct {
-	Title          string
-	Author         string
-	URL            string
-	Duration       lavalink.Duration
-	ArtworkURL     string
-	RequestedByID  string
-	RequestedBy    string
-	Position       int
-	IsLive         bool
+	Title         string
+	Author        string
+	URL           string
+	Duration      lavalink.Duration
+	ArtworkURL    string
+	RequestedByID string
+	RequestedBy   string
+	Position      int
+	IsLive        bool
 }
 
 // ToDisplayInfo converts a QueuedTrack to TrackDisplayInfo.
 func (q *QueuedTrack) ToDisplayInfo(position int) TrackDisplayInfo {
+	var uri string
+	if q.Track.Info.URI != nil {
+		uri = *q.Track.Info.URI
+	}
 	return TrackDisplayInfo{
 		Title:         q.Track.Info.Title,
 		Author:        q.Track.Info.Author,
-		URL:           *q.Track.Info.URI,
+		URL:           uri,
 		Duration:      q.Track.Info.Length,
 		ArtworkURL:    getArtworkURL(q.Track),
 		RequestedByID: q.RequestedByID,
@@ -74,9 +78,9 @@ type CurrentTrackInfo struct {
 
 // PlayerState represents the current state of the player.
 type PlayerState struct {
-	IsPlaying     bool
-	IsPaused      bool
-	CurrentTrack  *CurrentTrackInfo
-	QueueLength   int
-	NextTrack     *TrackDisplayInfo
+	IsPlaying    bool
+	IsPaused     bool
+	CurrentTrack *CurrentTrackInfo
+	QueueLength  int
+	NextTrack    *TrackDisplayInfo
 }
