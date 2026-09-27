@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Client provides lyrics fetching functionality with caching.
@@ -60,6 +62,7 @@ const (
 	PageSize       = 1900
 	cacheTTL       = 30 * time.Minute
 	requestTimeout = 10 * time.Second
+	maxCacheItems  = 256
 )
 
 // NewClient creates a new lyrics client.
@@ -437,9 +440,7 @@ func (c *Client) findBestMatch(hits []searchHit, title, artist string) (*searchR
 	}
 
 	if len(candidates) == 0 {
-		// Fall back to first result if no candidates passed filters
-		c.logger.Warn("no filtered candidates, using first result")
-		return &hits[0].Result, nil
+		return nil, fmt.Errorf("no song results match the requested track")
 	}
 
 	// Second pass: find the best match by artist and title similarity
@@ -449,18 +450,25 @@ func (c *Client) findBestMatch(hits []searchHit, title, artist string) (*searchR
 	for _, result := range candidates {
 		resultArtistLower := strings.ToLower(result.ArtistNames)
 		resultTitleLower := strings.ToLower(result.Title)
+		// Require evidence for the title and, when supplied, the artist.
+		// An empty query must never count as a substring match.
+		titleMatches := matchesSearchPhrase(resultTitleLower, titleLower)
+		artistMatches := matchesSearchPhrase(resultArtistLower, artistLower)
+		if !titleMatches || (artistLower != "" && !artistMatches) {
+			continue
+		}
 
 		score := 0
 
 		// Artist matches (most important)
-		if strings.Contains(resultArtistLower, artistLower) || strings.Contains(artistLower, resultArtistLower) {
+		if artistMatches {
 			score += 10
 		}
 
 		// Extract main artist (before "Ft." etc)
 		mainArtist := strings.Split(resultArtistLower, "(")[0]
 		mainArtist = strings.TrimSpace(mainArtist)
-		if strings.Contains(mainArtist, artistLower) || strings.Contains(artistLower, mainArtist) {
+		if artistLower != "" && mainArtist != "" && (strings.Contains(mainArtist, artistLower) || strings.Contains(artistLower, mainArtist)) {
 			score += 5
 		}
 
@@ -495,8 +503,18 @@ func (c *Client) findBestMatch(hits []searchHit, title, artist string) (*searchR
 		return bestMatch, nil
 	}
 
-	// If no match with score, return first candidate
-	return candidates[0], nil
+	return nil, fmt.Errorf("no sufficiently matching song found for %q by %q", title, artist)
+}
+
+// matchesSearchPhrase requires whole words, so "Sky" does not match "Skylight".
+func matchesSearchPhrase(result, query string) bool {
+	normalize := func(s string) string {
+		return strings.Join(strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+		}), " ")
+	}
+	result, query = normalize(result), normalize(query)
+	return result != "" && query != "" && (strings.Contains(" "+result+" ", " "+query+" ") || strings.Contains(" "+query+" ", " "+result+" "))
 }
 
 // fetchLyricsHTML fetches the raw lyrics HTML for a song ID.
@@ -578,38 +596,33 @@ func (c *Client) decodeHTMLEntities(s string) string {
 
 // paginateLyrics splits lyrics into pages that fit Discord's character limit.
 func (c *Client) paginateLyrics(lyrics string) []string {
-	if len(lyrics) <= PageSize {
+	if utf8.RuneCountInString(lyrics) <= PageSize {
 		return []string{lyrics}
 	}
 
 	var pages []string
 	lines := strings.Split(lyrics, "\n")
-	var currentPage strings.Builder
+	var currentPage []rune
 
 	for _, line := range lines {
-		// Check if adding this line would exceed the limit
-		if currentPage.Len()+len(line)+1 > PageSize {
-			// Save current page and start new one
-			if currentPage.Len() > 0 {
-				pages = append(pages, strings.TrimSpace(currentPage.String()))
-				currentPage.Reset()
-			}
-
-			// If single line is too long, truncate it
-			if len(line) > PageSize {
-				line = line[:PageSize-3] + "..."
-			}
+		runes := []rune(line)
+		if len(currentPage) > 0 && len(currentPage)+len(runes)+1 > PageSize {
+			pages = append(pages, strings.TrimSpace(string(currentPage)))
+			currentPage = nil
 		}
-
-		if currentPage.Len() > 0 {
-			currentPage.WriteString("\n")
+		for len(runes) > PageSize {
+			pages = append(pages, string(runes[:PageSize]))
+			runes = runes[PageSize:]
 		}
-		currentPage.WriteString(line)
+		if len(currentPage) > 0 {
+			currentPage = append(currentPage, '\n')
+		}
+		currentPage = append(currentPage, runes...)
 	}
 
 	// Don't forget the last page
-	if currentPage.Len() > 0 {
-		pages = append(pages, strings.TrimSpace(currentPage.String()))
+	if len(currentPage) > 0 {
+		pages = append(pages, strings.TrimSpace(string(currentPage)))
 	}
 
 	return pages
@@ -666,11 +679,12 @@ func newCache(ttl time.Duration) *lyricsCache {
 }
 
 func (c *lyricsCache) get(key string) *LyricsResult {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	item, exists := c.items[key]
 	if !exists || time.Now().After(item.expiresAt) {
+		delete(c.items, key)
 		return nil
 	}
 	return item.result
@@ -679,9 +693,24 @@ func (c *lyricsCache) get(key string) *LyricsResult {
 func (c *lyricsCache) set(key string, result *LyricsResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := time.Now()
+	oldestKey := ""
+	var oldest time.Time
+	for cacheKey, item := range c.items {
+		if !now.Before(item.expiresAt) {
+			delete(c.items, cacheKey)
+			continue
+		}
+		if oldestKey == "" || item.expiresAt.Before(oldest) {
+			oldestKey, oldest = cacheKey, item.expiresAt
+		}
+	}
+	if _, exists := c.items[key]; !exists && len(c.items) >= maxCacheItems {
+		delete(c.items, oldestKey)
+	}
 
 	c.items[key] = &cacheItem{
 		result:    result,
-		expiresAt: time.Now().Add(c.ttl),
+		expiresAt: now.Add(c.ttl),
 	}
 }

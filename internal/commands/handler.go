@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/DalyChouikh/delify/internal/components"
 	"github.com/DalyChouikh/delify/internal/config"
 	"github.com/DalyChouikh/delify/internal/embed"
@@ -16,11 +16,15 @@ import (
 	"github.com/DalyChouikh/delify/internal/lyrics"
 	"github.com/DalyChouikh/delify/internal/player"
 	"github.com/DalyChouikh/delify/internal/utils"
+	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/snowflake/v2"
 )
 
 const (
-	queuePageSize = 10
+	queuePageSize   = 10
+	controlTimeout  = 20 * time.Second
+	maxLyricsStates = 256
+	lyricsStateTTL  = 30 * time.Minute
 )
 
 // Handler manages slash commands.
@@ -43,6 +47,7 @@ type lyricsStateManager struct {
 type lyricsState struct {
 	result      *lyrics.LyricsResult
 	currentPage int
+	expiresAt   time.Time
 }
 
 func newLyricsStateManager() *lyricsStateManager {
@@ -54,14 +59,34 @@ func newLyricsStateManager() *lyricsStateManager {
 func (m *lyricsStateManager) set(messageID string, result *lyrics.LyricsResult, page int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.states[messageID] = &lyricsState{result: result, currentPage: page}
+	now := time.Now()
+	oldestID := ""
+	var oldest time.Time
+	for id, state := range m.states {
+		if !now.Before(state.expiresAt) {
+			delete(m.states, id)
+			continue
+		}
+		if oldestID == "" || state.expiresAt.Before(oldest) {
+			oldestID, oldest = id, state.expiresAt
+		}
+	}
+	if _, exists := m.states[messageID]; !exists && len(m.states) >= maxLyricsStates {
+		delete(m.states, oldestID)
+	}
+	m.states[messageID] = &lyricsState{result: result, currentPage: page, expiresAt: now.Add(lyricsStateTTL)}
 }
 
 func (m *lyricsStateManager) get(messageID string) (*lyricsState, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	state, exists := m.states[messageID]
-	return state, exists
+	if !exists || !time.Now().Before(state.expiresAt) {
+		delete(m.states, messageID)
+		return nil, false
+	}
+	snapshot := *state
+	return &snapshot, true
 }
 
 func (m *lyricsStateManager) updatePage(messageID string, page int) {
@@ -120,7 +145,7 @@ func NewHandler(session *discordgo.Session, playerManager *player.Manager, cfg *
 
 // Commands returns all slash commands to register.
 func (h *Handler) Commands() []*discordgo.ApplicationCommand {
-	return []*discordgo.ApplicationCommand{
+	commands := []*discordgo.ApplicationCommand{
 		{
 			Name:        "play",
 			Description: "Play a song or add it to the queue",
@@ -194,43 +219,62 @@ func (h *Handler) Commands() []*discordgo.ApplicationCommand {
 			},
 		},
 	}
+	for _, command := range commands {
+		guildOnly := false
+		command.DMPermission = &guildOnly
+	}
+	return commands
 }
 
 // Register registers all slash commands with Discord.
 // If guildIDs is empty, commands are registered globally (takes up to 1 hour to propagate).
 // If guildIDs is provided, commands are registered to each guild instantly.
 func (h *Handler) Register(guildIDs []string) error {
+	return h.RegisterContext(context.Background(), guildIDs)
+}
+
+// RegisterContext registers commands while respecting startup cancellation.
+func (h *Handler) RegisterContext(ctx context.Context, guildIDs []string) error {
 	commands := h.Commands()
-
-	// If no guild IDs specified, register globally
-	if len(guildIDs) == 0 {
-		h.logger.Info("registering commands globally (may take up to 1 hour to propagate)")
-		for _, cmd := range commands {
-			_, err := h.session.ApplicationCommandCreate(h.session.State.User.ID, "", cmd)
-			if err != nil {
-				return fmt.Errorf("failed to create global command %s: %w", cmd.Name, err)
-			}
-			h.logger.Info("registered global command", "name", cmd.Name)
-		}
-		return nil
+	if h.session == nil || h.session.State == nil {
+		return fmt.Errorf("Discord session state is unavailable")
 	}
-
-	// Register to each specified guild
+	h.session.State.RLock()
+	user := h.session.State.User
+	appID := ""
+	if user != nil {
+		appID = user.ID
+	}
+	h.session.State.RUnlock()
+	if appID == "" {
+		return fmt.Errorf("Discord bot user is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if len(guildIDs) == 0 {
+		guildIDs = []string{""}
+	}
 	for _, guildID := range guildIDs {
-		h.logger.Info("registering commands to guild", "guild_id", guildID)
-		for _, cmd := range commands {
-			_, err := h.session.ApplicationCommandCreate(h.session.State.User.ID, guildID, cmd)
-			if err != nil {
-				return fmt.Errorf("failed to create command %s for guild %s: %w", cmd.Name, guildID, err)
-			}
-			h.logger.Info("registered command", "name", cmd.Name, "guild_id", guildID)
+		if _, err := h.session.ApplicationCommandBulkOverwrite(appID, guildID, commands, discordgo.WithContext(ctx)); err != nil {
+			return fmt.Errorf("failed to register commands for guild %q: %w", guildID, err)
 		}
+		h.logger.Info("registered commands", "guild_id", guildID, "count", len(commands))
 	}
 	return nil
 }
 
 // HandleInteraction routes interaction events to appropriate handlers.
 func (h *Handler) HandleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i == nil || i.Interaction == nil {
+		return
+	}
+	if i.Type != discordgo.InteractionApplicationCommand && i.Type != discordgo.InteractionMessageComponent {
+		return
+	}
+	if _, err := snowflake.Parse(i.GuildID); err != nil || i.GuildID == "" || i.Member == nil || i.Member.User == nil {
+		h.respondEphemeralError(s, i, errors.New(errors.ErrInvalidInput).WithDetails("Use this command in a server."))
+		return
+	}
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
 		h.handleCommand(s, i)
@@ -290,40 +334,51 @@ func (h *Handler) handleButton(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 
 	guildID, _ := snowflake.Parse(i.GuildID)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
+	// Playback buttons edit the message they belong to after acknowledging it.
+	switch customID {
+	case components.ButtonPause, components.ButtonResume, components.ButtonSkip, components.ButtonStop:
+		if !h.deferResponse(s, i, true, false) {
+			return
+		}
+	}
 
 	switch customID {
 	case components.ButtonPause:
 		if err := h.player.Pause(ctx, guildID); err != nil {
-			h.respondEphemeralError(s, i, errors.New(errors.ErrAlreadyPaused))
+			h.followupError(s, i, errors.New(errors.ErrAlreadyPaused))
 			return
 		}
 		h.updateNowPlayingMessage(s, i, true)
 
 	case components.ButtonResume:
 		if err := h.player.Resume(ctx, guildID); err != nil {
-			h.respondEphemeralError(s, i, errors.New(errors.ErrNotPaused))
+			h.followupError(s, i, errors.New(errors.ErrNotPaused))
 			return
 		}
 		h.updateNowPlayingMessage(s, i, false)
 
 	case components.ButtonSkip:
 		if _, err := h.player.Skip(ctx, guildID); err != nil {
-			h.respondEphemeralError(s, i, errors.New(errors.ErrNothingPlaying))
+			h.followupError(s, i, errors.New(errors.ErrNothingPlaying))
 			return
 		}
 		h.updateNowPlayingMessage(s, i, false)
 
 	case components.ButtonStop:
 		if err := h.player.Stop(ctx, guildID); err != nil {
-			h.respondEphemeralError(s, i, errors.New(errors.ErrInternal))
+			h.followupError(s, i, errors.New(errors.ErrInternal))
 			return
 		}
-		h.respondWithEmbed(s, i, h.templates.Stopped(), nil)
+		h.editWithEmbed(s, i, h.templates.Stopped(), nil)
 
 	case components.ButtonClear:
+		if !h.deferResponse(s, i, false, false) {
+			return
+		}
 		count := h.player.ClearQueue(guildID)
-		h.respondWithEmbed(s, i, h.templates.QueueCleared(count), nil)
+		h.editWithEmbed(s, i, h.templates.QueueCleared(count), nil)
 
 	case components.ButtonLyrics:
 		h.handleLyricsButton(s, i, guildID)
@@ -348,10 +403,14 @@ func (h *Handler) handleButton(s *discordgo.Session, i *discordgo.InteractionCre
 
 // handleSeekButton handles seek button presses.
 func (h *Handler) handleSeekButton(s *discordgo.Session, i *discordgo.InteractionCreate, guildID snowflake.ID, deltaMs int64) {
-	ctx := context.Background()
+	if !h.deferResponse(s, i, false, true) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
 	newPos, err := h.player.SeekRelative(ctx, guildID, deltaMs)
 	if err != nil {
-		h.respondEphemeralError(s, i, errors.New(errors.ErrNothingPlaying))
+		h.editWithError(s, i, errors.New(errors.ErrNothingPlaying))
 		return
 	}
 
@@ -359,19 +418,19 @@ func (h *Handler) handleSeekButton(s *discordgo.Session, i *discordgo.Interactio
 	if state.CurrentTrack != nil {
 		trackInfo := h.buildTrackInfo(state)
 		emb := h.templates.Seeked(trackInfo, newPos)
-		h.respondEphemeral(s, i, emb)
+		h.editWithEmbed(s, i, emb, nil)
 	} else {
-		h.respondEphemeralError(s, i, errors.New(errors.ErrNothingPlaying))
+		h.editWithError(s, i, errors.New(errors.ErrNothingPlaying))
 	}
 }
 
 // handlePlay handles the /play command.
 func (h *Handler) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Defer reply to give us time to process
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	}); err != nil {
-		h.logger.Error("failed to defer response", "error", err)
+	if err := h.verifyVoiceChannel(i); err != nil {
+		h.respondEphemeralError(s, i, err)
+		return
+	}
+	if !h.deferResponse(s, i, false, false) {
 		return
 	}
 
@@ -408,7 +467,8 @@ func (h *Handler) handlePlay(s *discordgo.Session, i *discordgo.InteractionCreat
 	requestedBy := i.Member.User.Username
 
 	// Play the track
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 	result, err := h.player.Play(ctx, guildID, channelID, query, requestedByID, requestedBy)
 	if err != nil {
 		h.logger.Error("failed to play track", "error", err, "query", query)
@@ -465,13 +525,17 @@ func (h *Handler) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreat
 		h.respondEphemeralError(s, i, err)
 		return
 	}
+	if !h.deferResponse(s, i, false, false) {
+		return
+	}
 
 	guildID, _ := snowflake.Parse(i.GuildID)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
 
 	skippedTrack, err := h.player.Skip(ctx, guildID)
 	if err != nil {
-		h.respondEphemeralError(s, i, errors.New(errors.ErrNothingPlaying))
+		h.editWithError(s, i, errors.New(errors.ErrNothingPlaying))
 		return
 	}
 
@@ -484,7 +548,7 @@ func (h *Handler) handleSkip(s *discordgo.Session, i *discordgo.InteractionCreat
 	}
 
 	responseEmbed := h.templates.Skipped(skippedTrack.Info.Title, nextInfo)
-	h.respondWithEmbed(s, i, responseEmbed, nil)
+	h.editWithEmbed(s, i, responseEmbed, nil)
 }
 
 // handleStop handles the /stop command.
@@ -493,16 +557,20 @@ func (h *Handler) handleStop(s *discordgo.Session, i *discordgo.InteractionCreat
 		h.respondEphemeralError(s, i, err)
 		return
 	}
-
-	guildID, _ := snowflake.Parse(i.GuildID)
-	ctx := context.Background()
-
-	if err := h.player.Stop(ctx, guildID); err != nil {
-		h.respondEphemeralError(s, i, errors.New(errors.ErrInternal))
+	if !h.deferResponse(s, i, false, false) {
 		return
 	}
 
-	h.respondWithEmbed(s, i, h.templates.Stopped(), nil)
+	guildID, _ := snowflake.Parse(i.GuildID)
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
+
+	if err := h.player.Stop(ctx, guildID); err != nil {
+		h.editWithError(s, i, errors.New(errors.ErrInternal))
+		return
+	}
+
+	h.editWithEmbed(s, i, h.templates.Stopped(), nil)
 }
 
 // handlePause handles the /pause command.
@@ -511,12 +579,16 @@ func (h *Handler) handlePause(s *discordgo.Session, i *discordgo.InteractionCrea
 		h.respondEphemeralError(s, i, err)
 		return
 	}
+	if !h.deferResponse(s, i, false, false) {
+		return
+	}
 
 	guildID, _ := snowflake.Parse(i.GuildID)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
 
 	if err := h.player.Pause(ctx, guildID); err != nil {
-		h.respondEphemeralError(s, i, errors.New(errors.ErrAlreadyPaused))
+		h.editWithError(s, i, errors.New(errors.ErrAlreadyPaused))
 		return
 	}
 
@@ -524,7 +596,9 @@ func (h *Handler) handlePause(s *discordgo.Session, i *discordgo.InteractionCrea
 	if state.CurrentTrack != nil {
 		trackInfo := h.buildTrackInfo(state)
 		emb := h.templates.Paused(trackInfo, state.CurrentTrack.Position)
-		h.respondWithEmbed(s, i, emb, components.NowPlayingComponents(true))
+		h.editWithEmbed(s, i, emb, components.NowPlayingComponents(true))
+	} else {
+		h.editWithError(s, i, errors.New(errors.ErrNothingPlaying))
 	}
 }
 
@@ -534,12 +608,16 @@ func (h *Handler) handleResume(s *discordgo.Session, i *discordgo.InteractionCre
 		h.respondEphemeralError(s, i, err)
 		return
 	}
+	if !h.deferResponse(s, i, false, false) {
+		return
+	}
 
 	guildID, _ := snowflake.Parse(i.GuildID)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
 
 	if err := h.player.Resume(ctx, guildID); err != nil {
-		h.respondEphemeralError(s, i, errors.New(errors.ErrNotPaused))
+		h.editWithError(s, i, errors.New(errors.ErrNotPaused))
 		return
 	}
 
@@ -547,7 +625,9 @@ func (h *Handler) handleResume(s *discordgo.Session, i *discordgo.InteractionCre
 	if state.CurrentTrack != nil {
 		trackInfo := h.buildTrackInfo(state)
 		emb := h.templates.Resumed(trackInfo)
-		h.respondWithEmbed(s, i, emb, nil)
+		h.editWithEmbed(s, i, emb, nil)
+	} else {
+		h.editWithError(s, i, errors.New(errors.ErrNothingPlaying))
 	}
 }
 
@@ -621,11 +701,11 @@ func (h *Handler) handleQueuePagination(s *discordgo.Session, i *discordgo.Inter
 	// Parse current page from the existing embed
 	currentPage := 1
 	if i.Message != nil && len(i.Message.Embeds) > 0 {
-		// Try to extract current page from footer text like "Page 1 of 5"
+		// The template starts its footer with "Page 1/5".
 		footer := i.Message.Embeds[0].Footer
 		if footer != nil && footer.Text != "" {
 			var page, total int
-			if _, err := fmt.Sscanf(footer.Text, "Page %d of %d", &page, &total); err == nil {
+			if _, err := fmt.Sscanf(footer.Text, "Page %d/%d", &page, &total); err == nil {
 				currentPage = page
 			}
 		}
@@ -688,16 +768,19 @@ func (h *Handler) handleClear(s *discordgo.Session, i *discordgo.InteractionCrea
 		h.respondEphemeralError(s, i, err)
 		return
 	}
+	if !h.deferResponse(s, i, false, false) {
+		return
+	}
 
 	guildID, _ := snowflake.Parse(i.GuildID)
 	count := h.player.ClearQueue(guildID)
 
 	if count == 0 {
-		h.respondEphemeralError(s, i, errors.New(errors.ErrQueueEmpty))
+		h.editWithError(s, i, errors.New(errors.ErrQueueEmpty))
 		return
 	}
 
-	h.respondWithEmbed(s, i, h.templates.QueueCleared(count), nil)
+	h.editWithEmbed(s, i, h.templates.QueueCleared(count), nil)
 }
 
 // handleSeek handles the /seek command.
@@ -723,9 +806,13 @@ func (h *Handler) handleSeek(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
-	ctx := context.Background()
+	if !h.deferResponse(s, i, false, false) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
 	if err := h.player.Seek(ctx, guildID, positionMs); err != nil {
-		h.respondEphemeralError(s, i, errors.New(errors.ErrNothingPlaying))
+		h.editWithError(s, i, errors.New(errors.ErrNothingPlaying))
 		return
 	}
 
@@ -733,7 +820,9 @@ func (h *Handler) handleSeek(s *discordgo.Session, i *discordgo.InteractionCreat
 	if state.CurrentTrack != nil {
 		trackInfo := h.buildTrackInfo(state)
 		emb := h.templates.Seeked(trackInfo, state.CurrentTrack.Position)
-		h.respondWithEmbed(s, i, emb, nil)
+		h.editWithEmbed(s, i, emb, nil)
+	} else {
+		h.editWithError(s, i, errors.New(errors.ErrNothingPlaying))
 	}
 }
 
@@ -744,11 +833,7 @@ func (h *Handler) handleLyrics(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
-	// Defer reply to give us time to fetch lyrics
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	}); err != nil {
-		h.logger.Error("failed to defer response", "error", err)
+	if !h.deferResponse(s, i, false, false) {
 		return
 	}
 
@@ -828,11 +913,7 @@ func (h *Handler) handleLyricsButton(s *discordgo.Session, i *discordgo.Interact
 	title := state.CurrentTrack.Track.Info.Title
 	artist := state.CurrentTrack.Track.Info.Author
 
-	// Defer reply
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	}); err != nil {
-		h.logger.Error("failed to defer response", "error", err)
+	if !h.deferResponse(s, i, false, false) {
 		return
 	}
 
@@ -870,6 +951,10 @@ func (h *Handler) handleLyricsButton(s *discordgo.Session, i *discordgo.Interact
 
 // handleLyricsPagination handles lyrics pagination button presses.
 func (h *Handler) handleLyricsPagination(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.Message == nil {
+		h.respondEphemeralError(s, i, errors.New(errors.ErrInvalidInput))
+		return
+	}
 	messageID := i.Message.ID
 	customID := i.MessageComponentData().CustomID
 
@@ -959,34 +1044,43 @@ func (h *Handler) verifyVoiceChannel(i *discordgo.InteractionCreate) *errors.Use
 		return errors.New(errors.ErrNotInVoice)
 	}
 
-	// Check if bot is in a voice channel in this guild
-	guild, err := h.session.State.Guild(i.GuildID)
-	if err != nil {
-		return nil // Can't verify, allow the action
+	state := h.session.State
+	state.RLock()
+	defer state.RUnlock()
+	if state.User == nil {
+		return errors.New(errors.ErrInternal)
 	}
-
-	for _, vs := range guild.VoiceStates {
-		if vs.UserID == h.session.State.User.ID {
-			if vs.ChannelID != voiceState.ChannelID {
+	for _, guild := range state.Guilds {
+		if guild == nil || guild.ID != i.GuildID {
+			continue
+		}
+		for _, vs := range guild.VoiceStates {
+			if vs != nil && vs.UserID == state.User.ID && vs.ChannelID != "" && vs.ChannelID != voiceState.ChannelID {
 				return errors.New(errors.ErrDifferentChannel)
 			}
-			break
 		}
+		return nil
 	}
-
-	return nil
+	return errors.New(errors.ErrNotInVoice)
 }
 
 // getUserVoiceState gets the voice state of the interaction user.
 func (h *Handler) getUserVoiceState(i *discordgo.InteractionCreate) (*discordgo.VoiceState, error) {
-	guild, err := h.session.State.Guild(i.GuildID)
-	if err != nil {
-		return nil, err
+	if i == nil || i.Interaction == nil || i.GuildID == "" || i.Member == nil || i.Member.User == nil || h.session == nil || h.session.State == nil {
+		return nil, fmt.Errorf("guild member voice state is unavailable")
 	}
-
-	for _, vs := range guild.VoiceStates {
-		if vs.UserID == i.Member.User.ID {
-			return vs, nil
+	state := h.session.State
+	state.RLock()
+	defer state.RUnlock()
+	for _, guild := range state.Guilds {
+		if guild == nil || guild.ID != i.GuildID {
+			continue
+		}
+		for _, vs := range guild.VoiceStates {
+			if vs != nil && vs.UserID == i.Member.User.ID && vs.ChannelID != "" {
+				snapshot := *vs
+				return &snapshot, nil
+			}
 		}
 	}
 
@@ -994,6 +1088,33 @@ func (h *Handler) getUserVoiceState(i *discordgo.InteractionCreate) (*discordgo.
 }
 
 // Response helpers
+
+func (h *Handler) deferResponse(s *discordgo.Session, i *discordgo.InteractionCreate, update, ephemeral bool) bool {
+	response := &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource}
+	if update {
+		response.Type = discordgo.InteractionResponseDeferredMessageUpdate
+	} else if ephemeral {
+		response.Data = &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	if err := s.InteractionRespond(i.Interaction, response, discordgo.WithContext(ctx)); err != nil {
+		h.logger.Error("failed to defer response", "error", err)
+		return false
+	}
+	return true
+}
+
+func (h *Handler) followupError(s *discordgo.Session, i *discordgo.InteractionCreate, userErr *errors.UserError) {
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
+	if _, err := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+		Embeds: []*discordgo.MessageEmbed{userErr.ToEmbed()},
+		Flags:  discordgo.MessageFlagsEphemeral,
+	}, discordgo.WithContext(ctx)); err != nil {
+		h.logger.Error("failed to send followup error", "error", err)
+	}
+}
 
 func (h *Handler) respondWithEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, emb *discordgo.MessageEmbed, comps []discordgo.MessageComponent) {
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -1027,19 +1148,22 @@ func (h *Handler) respondEphemeralError(s *discordgo.Session, i *discordgo.Inter
 
 func (h *Handler) editWithEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, emb *discordgo.MessageEmbed, comps []discordgo.MessageComponent) {
 	embeds := []*discordgo.MessageEmbed{emb}
+	if comps == nil {
+		comps = []discordgo.MessageComponent{}
+	}
 	edit := &discordgo.WebhookEdit{
 		Embeds:     &embeds,
 		Components: &comps,
 	}
-	if _, err := s.InteractionResponseEdit(i.Interaction, edit); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
+	if _, err := s.InteractionResponseEdit(i.Interaction, edit, discordgo.WithContext(ctx)); err != nil {
 		h.logger.Error("failed to edit with embed", "error", err)
 	}
 }
 
 func (h *Handler) editWithError(s *discordgo.Session, i *discordgo.InteractionCreate, userErr *errors.UserError) {
-	if _, err := s.InteractionResponseEdit(i.Interaction, userErr.EphemeralWebhookEdit()); err != nil {
-		h.logger.Error("failed to edit with error", "error", err)
-	}
+	h.editWithEmbed(s, i, userErr.ToEmbed(), nil)
 }
 
 func (h *Handler) updateNowPlayingMessage(s *discordgo.Session, i *discordgo.InteractionCreate, isPaused bool) {
@@ -1049,17 +1173,9 @@ func (h *Handler) updateNowPlayingMessage(s *discordgo.Session, i *discordgo.Int
 	if state.CurrentTrack != nil {
 		trackInfo := h.buildTrackInfo(state)
 		emb := h.templates.NowPlaying(trackInfo)
-		embeds := []*discordgo.MessageEmbed{emb}
 		comps := components.NowPlayingComponents(isPaused)
-
-		if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseUpdateMessage,
-			Data: &discordgo.InteractionResponseData{
-				Embeds:     embeds,
-				Components: comps,
-			},
-		}); err != nil {
-			h.logger.Error("failed to update message", "error", err)
-		}
+		h.editWithEmbed(s, i, emb, comps)
+	} else {
+		h.editWithEmbed(s, i, h.templates.Stopped(), nil)
 	}
 }

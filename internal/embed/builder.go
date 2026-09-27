@@ -3,8 +3,8 @@ package embed
 import (
 	"fmt"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/DalyChouikh/delify/internal/utils"
+	"github.com/bwmarrin/discordgo"
 )
 
 // Builder helps construct Discord embeds with a fluent API.

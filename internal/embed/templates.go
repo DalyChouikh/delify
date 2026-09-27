@@ -5,8 +5,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/DalyChouikh/delify/internal/utils"
+	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/disgolink/v3/lavalink"
 )
 
