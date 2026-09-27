@@ -1,0 +1,14 @@
+.git
+.agents
+.codex
+.env
+.env.*
+*.log
+*.test
+*.pem
+*.key
+cookies*
+docs
+dist
+build
+delify

@@ -3,17 +3,25 @@ services:
   # Lavalink v4 Audio Server
   # ============================================
   lavalink:
-    image: ghcr.io/lavalink-devs/lavalink:800c2ae
+    image: ghcr.io/lavalink-devs/lavalink:4.2.2
     container_name: delify-lavalink
     restart: unless-stopped
-    ports:
-      - "2333:2333"
+    # Only reachable from the Compose network; never expose audio control publicly.
+    expose:
+      - "2333"
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       # ----------------------------------------
       # Server Configuration
       # ----------------------------------------
       SERVER_PORT: 2333
       SERVER_ADDRESS: 0.0.0.0
+      _JAVA_OPTIONS: "-Xms128m -Xmx512m"
 
       # ----------------------------------------
       # Lavalink Core Settings
@@ -32,11 +40,13 @@ services:
       # Plugin Installation (via env vars)
       # ----------------------------------------
       # YouTube Source Plugin (required for LavaSrc YouTube search)
-      LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.18.0"
-      LAVALINK_PLUGINS_0_SNAPSHOT: false
+      # Pinned upstream fix for TV playback failures (youtube-source #233)
+      # and cipher connection starvation (#245), not yet in release 1.18.2.
+      LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:2be8e542d3f6f178e048dca565892684c2e40177"
+      LAVALINK_PLUGINS_0_SNAPSHOT: true
 
       # LavaSrc Plugin (for Spotify support)
-      LAVALINK_PLUGINS_1_DEPENDENCY: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
+      LAVALINK_PLUGINS_1_DEPENDENCY: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
       LAVALINK_PLUGINS_1_SNAPSHOT: false
 
       # ----------------------------------------
@@ -55,7 +65,7 @@ services:
       # Authenticates as a real user to bypass restrictions
       # OAuth can still be enabled to improve access for restricted videos
       # ----------------------------------------
-      PLUGINS_YOUTUBE_OAUTH_ENABLED: ${YOUTUBE_OAUTH_ENABLED:-true}
+      PLUGINS_YOUTUBE_OAUTH_ENABLED: ${YOUTUBE_OAUTH_ENABLED:-false}
       # Set your refresh token here after completing OAuth flow once
       PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN: ${YOUTUBE_OAUTH_REFRESH_TOKEN:-}
 
@@ -98,9 +108,10 @@ services:
       LOGGING_LEVEL_ROOT: INFO
       LOGGING_LEVEL_LAVALINK: INFO
       LOGGING_LEVEL_DEV_LAVALINK_YOUTUBE: INFO
+      LOGGING_LEVEL_LAVALINK_SERVER_IO_REQUESTLOGGINGFILTER: WARN
 
     healthcheck:
-      test: [ "CMD-SHELL", "curl -s --connect-timeout 5 http://localhost:2333/version > /dev/null" ]
+      test: [ "CMD-SHELL", "curl -fsS --connect-timeout 5 --max-time 8 -H \"Authorization: $$LAVALINK_SERVER_PASSWORD\" http://localhost:2333/version > /dev/null" ]
       interval: 10s
       timeout: 10s
       retries: 10
@@ -136,6 +147,16 @@ services:
       dockerfile: Dockerfile
     container_name: delify-bot
     restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       lavalink:
         condition: service_healthy
@@ -156,7 +177,7 @@ services:
       RAPIDAPI_HOST: ${RAPIDAPI_HOST:-genius-song-lyrics1.p.rapidapi.com}
 
       # Bot Configuration
-      LOG_LEVEL: info
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       INACTIVITY_TIMEOUT: ${INACTIVITY_TIMEOUT:-30}
 
     networks:

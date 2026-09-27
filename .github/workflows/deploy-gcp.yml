@@ -144,7 +144,7 @@ jobs:
               cat > ~/delify/docker-compose.prod.yml << 'COMPOSEOF'
           services:
             lavalink:
-              image: ghcr.io/lavalink-devs/lavalink:4
+              image: ghcr.io/lavalink-devs/lavalink:4.2.2
               container_name: delify-lavalink
               restart: unless-stopped
               environment:
@@ -158,9 +158,9 @@ jobs:
                 LAVALINK_SERVER_SOURCES_VIMEO: \"true\"
                 LAVALINK_SERVER_SOURCES_HTTP: \"true\"
                 LAVALINK_SERVER_SOURCES_LOCAL: \"false\"
-                LAVALINK_PLUGINS_0_DEPENDENCY: \"dev.lavalink.youtube:youtube-plugin:1.18.0\"
-                LAVALINK_PLUGINS_0_SNAPSHOT: \"false\"
-                LAVALINK_PLUGINS_1_DEPENDENCY: \"com.github.topi314.lavasrc:lavasrc-plugin:4.8.1\"
+                LAVALINK_PLUGINS_0_DEPENDENCY: \"dev.lavalink.youtube:youtube-plugin:2be8e542d3f6f178e048dca565892684c2e40177\"
+                LAVALINK_PLUGINS_0_SNAPSHOT: \"true\"
+                LAVALINK_PLUGINS_1_DEPENDENCY: \"com.github.topi314.lavasrc:lavasrc-plugin:4.8.3\"
                 LAVALINK_PLUGINS_1_SNAPSHOT: \"false\"
                 PLUGINS_YOUTUBE_ENABLED: \"true\"
                 PLUGINS_YOUTUBE_CLIENTS_0: TV
