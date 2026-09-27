@@ -13,19 +13,26 @@ import (
 
 	"github.com/DalyChouikh/delify/internal/bot"
 	"github.com/DalyChouikh/delify/internal/config"
+	"github.com/DalyChouikh/delify/internal/logging"
 )
 
 func main() {
+	cfg := config.Load()
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
+		slog.Error("invalid LOG_LEVEL", "value", cfg.LogLevel)
+		os.Exit(1)
+	}
 	// Initialize structured logger
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level:       level,
+		ReplaceAttr: logging.Redact(cfg.Discord.Token, cfg.Lavalink.Password, cfg.Lyrics.RapidAPIKey),
 	}))
 	slog.SetDefault(logger)
 
 	logger.Info("starting Delify Music Bot...")
 
 	// Load configuration
-	cfg := config.Load()
 	if err := cfg.Validate(); err != nil {
 		logger.Error("configuration error", "error", err)
 		os.Exit(1)
@@ -38,21 +45,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	// Install signal handling before startup so Docker can stop a bot that is
+	// still connecting or registering commands.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	// Start the bot
 	if err := musicBot.Start(ctx); err != nil {
+		_ = musicBot.Stop()
+		if ctx.Err() != nil {
+			return
+		}
 		logger.Error("failed to start bot", "error", err)
 		os.Exit(1)
 	}
 
 	// Wait for shutdown signal
 	logger.Info("bot is running. Press Ctrl+C to stop.")
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+	<-ctx.Done()
 
 	// Graceful shutdown
 	logger.Info("received shutdown signal")

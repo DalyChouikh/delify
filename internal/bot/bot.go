@@ -5,13 +5,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
-	"github.com/bwmarrin/discordgo"
 	"github.com/DalyChouikh/delify/internal/commands"
 	"github.com/DalyChouikh/delify/internal/config"
 	"github.com/DalyChouikh/delify/internal/lavalink"
 	"github.com/DalyChouikh/delify/internal/player"
-	"github.com/disgoorg/disgolink/v3/disgolink"
+	"github.com/bwmarrin/discordgo"
 	"github.com/disgoorg/snowflake/v2"
 )
 
@@ -23,6 +24,8 @@ type Bot struct {
 	commandHandler *commands.Handler
 	config         *config.Config
 	logger         *slog.Logger
+	voiceMu        sync.Mutex
+	stopping       bool // protected by voiceMu
 }
 
 // New creates a new Discord bot instance.
@@ -49,10 +52,6 @@ func New(cfg *config.Config, logger *slog.Logger) (*Bot, error) {
 
 // Start initializes and starts the bot.
 func (b *Bot) Start(ctx context.Context) error {
-	// Add voice state update handler for disgolink
-	b.session.AddHandler(b.handleVoiceStateUpdate)
-	b.session.AddHandler(b.handleVoiceServerUpdate)
-
 	// Open Discord connection
 	if err := b.session.Open(); err != nil {
 		return fmt.Errorf("failed to open Discord session: %w", err)
@@ -74,11 +73,15 @@ func (b *Bot) Start(ctx context.Context) error {
 	// Create player manager
 	b.playerManager = player.NewManager(b.lavalinkClient.Link, b.session, b.config.Bot.InactivityTimeout, b.logger)
 
+	// Publish voice handlers only after their dependencies are initialized.
+	b.session.AddHandler(b.handleVoiceStateUpdate)
+	b.session.AddHandler(b.handleVoiceServerUpdate)
+
 	// Create command handler
 	b.commandHandler = commands.NewHandler(b.session, b.playerManager, b.config, b.logger)
 
 	// Register slash commands
-	if err := b.commandHandler.Register(b.config.Discord.GuildIDs); err != nil {
+	if err := b.commandHandler.RegisterContext(ctx, b.config.Discord.GuildIDs); err != nil {
 		return fmt.Errorf("failed to register commands: %w", err)
 	}
 
@@ -92,6 +95,12 @@ func (b *Bot) Start(ctx context.Context) error {
 // Stop gracefully shuts down the bot.
 func (b *Bot) Stop() error {
 	b.logger.Info("shutting down bot...")
+	b.voiceMu.Lock()
+	b.stopping = true
+	b.voiceMu.Unlock()
+	if b.playerManager != nil {
+		b.playerManager.Close()
+	}
 
 	if b.lavalinkClient != nil {
 		b.lavalinkClient.Close()
@@ -108,7 +117,9 @@ func (b *Bot) Stop() error {
 
 // handleVoiceStateUpdate forwards voice state updates to disgolink.
 func (b *Bot) handleVoiceStateUpdate(s *discordgo.Session, event *discordgo.VoiceStateUpdate) {
-	if event.UserID != s.State.User.ID {
+	b.voiceMu.Lock()
+	defer b.voiceMu.Unlock()
+	if b.stopping || b.lavalinkClient == nil || event == nil || event.VoiceState == nil || s.State == nil || s.State.User == nil || event.UserID != s.State.User.ID {
 		return
 	}
 
@@ -125,35 +136,36 @@ func (b *Bot) handleVoiceStateUpdate(s *discordgo.Session, event *discordgo.Voic
 		}
 	}
 
-	// Notify the player manager about voice state update
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	b.lavalinkClient.Link.OnVoiceStateUpdate(ctx, guildID, channelID, event.SessionID)
+
+	// Only release a waiting /play after Lavalink has received the update.
 	if b.playerManager != nil {
 		b.playerManager.OnVoiceStateUpdate(guildID, channelID)
 	}
 
-	b.lavalinkClient.Link.OnVoiceStateUpdate(ctx(s), guildID, channelID, event.SessionID)
 }
 
 // handleVoiceServerUpdate forwards voice server updates to disgolink.
 func (b *Bot) handleVoiceServerUpdate(s *discordgo.Session, event *discordgo.VoiceServerUpdate) {
+	b.voiceMu.Lock()
+	defer b.voiceMu.Unlock()
+	if b.stopping || b.lavalinkClient == nil || event == nil || event.Endpoint == "" {
+		return
+	}
 	guildID, err := snowflake.Parse(event.GuildID)
 	if err != nil {
 		return
 	}
 
-	// Notify the player manager about voice server update
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	b.lavalinkClient.Link.OnVoiceServerUpdate(ctx, guildID, event.Token, event.Endpoint)
+
+	// Only release a waiting /play after Lavalink has received the update.
 	if b.playerManager != nil {
 		b.playerManager.OnVoiceServerUpdate(guildID)
 	}
 
-	b.lavalinkClient.Link.OnVoiceServerUpdate(ctx(s), guildID, event.Token, event.Endpoint)
-}
-
-// ctx creates a context from a discordgo session (helper for the handlers).
-func ctx(s *discordgo.Session) context.Context {
-	return context.Background()
-}
-
-// VoiceStateUpdateHandler satisfies disgolink's requirement for voice state updates.
-type VoiceStateUpdateHandler struct {
-	Link disgolink.Client
 }
