@@ -1,0 +1,53 @@
+--- YoutubeAudioTrack.java
++++ YoutubeAudioTrack.java
+@@ -23,0 +24 @@
++import org.apache.http.client.utils.URIBuilder;
+@@ -249 +250,33 @@
+-    return new FormatWithUrl(format, resolvedUrl);
++    FormatWithUrl primary = new FormatWithUrl(format, resolvedUrl);
++    try {
++      probeMediaUrl(httpInterface, primary.signedUrl);
++      return primary;
++    } catch (IOException primaryFailure) {
++      if (Thread.currentThread().isInterrupted()) {
++        throw primaryFailure;
++      }
++      FormatWithUrl alternate = primary.getFallback();
++      if (alternate == null) {
++        throw primaryFailure;
++      }
++      log.warn("YouTube audio CDN {} failed; trying alternate {}",
++          primary.signedUrl.getHost(), alternate.signedUrl.getHost());
++      try {
++        probeMediaUrl(httpInterface, alternate.signedUrl);
++        return alternate;
++      } catch (IOException alternateFailure) {
++        alternateFailure.addSuppressed(primaryFailure);
++        throw alternateFailure;
++      }
++    }
++  }
++
++  private void probeMediaUrl(HttpInterface httpInterface, URI url) throws IOException {
++    HttpGet request = new HttpGet(url);
++    request.setHeader("Range", "bytes=0-0");
++    try (CloseableHttpResponse response = httpInterface.execute(request)) {
++      int status = response.getStatusLine().getStatusCode();
++      if (status < 200 || status >= 300) {
++        throw new IOException("Audio CDN returned HTTP " + status);
++      }
++    }
+@@ -291,2 +324 @@
+-      String signedString = signedUrl.toString();
+-      Map<String, String> urlParameters = decodeUrlEncodedItems(signedString, false);
++      Map<String, String> urlParameters = decodeUrlEncodedItems(signedUrl.getRawQuery(), false);
+@@ -307 +339,5 @@
+-      String newUrl = signedString.replaceFirst(hosts[0], hosts[1]);
++      String host = signedUrl.getHost();
++      if (host == null || !host.endsWith(".googlevideo.com") || hosts[0].isEmpty() ||
++          hosts[1].isEmpty() || !host.contains(hosts[0]) || hosts[0].equals(hosts[1])) {
++        return null;
++      }
+@@ -310 +346 @@
+-        URI uri = new URI(newUrl);
++        URI uri = new URIBuilder(signedUrl).setHost(host.replace(hosts[0], hosts[1])).build();

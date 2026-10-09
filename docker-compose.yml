@@ -3,7 +3,10 @@ services:
   # Lavalink v4 Audio Server
   # ============================================
   lavalink:
-    image: ghcr.io/lavalink-devs/lavalink:4.2.2
+    image: delify-lavalink:local
+    build:
+      context: .
+      dockerfile: docker/lavalink/Dockerfile
     container_name: delify-lavalink
     restart: unless-stopped
     # Only reachable from the Compose network; never expose audio control publicly.

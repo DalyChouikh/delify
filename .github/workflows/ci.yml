@@ -36,3 +36,5 @@ jobs:
           docker compose -f docker-compose.prod.yml config --quiet
       - name: Build Docker image
         run: docker build -t delify-ci .
+      - name: Build Lavalink image and test CDN fallback
+        run: docker build -f docker/lavalink/Dockerfile -t delify-lavalink-ci .
