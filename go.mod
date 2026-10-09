@@ -1,6 +1,6 @@
 module github.com/DalyChouikh/delify
 
-go 1.26.8
+go 1.26.9
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
