@@ -36,6 +36,12 @@ The upstream image digest and downloaded source/plugin checksums are pinned. Onl
 
 The earlier temporary IP overrides and diagnostic logging were removed. After deployment, the user confirmed audible Discord playback: “yeah there is sound, it played.” Local playback acceptance is complete. `docker-compose.prod.yml` continues to use the upstream Lavalink image; this patch currently applies to the local stack.
 
+## CI security update
+
+The first CI run for PR #3 passed race tests and static analysis, then failed its vulnerability check with nine reachable Go standard-library vulnerabilities in Go 1.26.8. Every finding listed Go 1.26.9 as the fixed version. The module directive and bot Docker builder now use Go 1.26.9; the vulnerability check remains enabled.
+
+Fresh local verification with Go 1.26.9 passed race tests, static analysis, and the bot Docker build. `govulncheck` exited successfully and reported zero vulnerabilities affecting the code. It also reported one module-level advisory in code the bot does not call.
+
 ## Diagnostic artifacts
 
 Diagnostic programs and temporary Compose overrides are under `/tmp`. They use an independent Lavalink session and never join Discord voice. Signed media URLs and credential values are excluded from this report and tool output.

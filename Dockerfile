@@ -1,7 +1,7 @@
 # ============================================
 # Stage 1: Build the Go binary
 # ============================================
-FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH
